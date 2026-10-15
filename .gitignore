@@ -1,0 +1,14 @@
+# credentials (dev-time only, never commit)
+.env.devices
+# build / data artifacts
+*.eap
+*.o
+build/
+model/data/
+model/cache/
+model/out/
+__pycache__/
+*.pyc
+# third-party reference checkouts
+ref/
+acap/app/model/

@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Train Audio Detection</title>
+  <link rel="stylesheet" href="style.css?v=0.2.0">
+</head>
+<body>
+<div class="shell">
+  <nav class="nav" aria-label="Main">
+    <div class="brand">
+      <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true"><rect x="1" y="1" width="34" height="34" rx="8" fill="#F2B705"/><path d="M8 22h3l2-8 3 12 3-16 3 12 2-4h4" fill="none" stroke="#12161B" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><span class="brand-name">Train Audio</span><span class="brand-sub">Detection · v<span id="appVersion">0.2</span></span></div>
+    </div>
+    <a href="#live" data-view="live">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3l3-7 4 14 3-9 2 2h3"/></svg><span>Live</span></a>
+    <a href="#tuning" data-view="tuning">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Tuning</span></a>
+    <a href="#history" data-view="history">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>History</span></a>
+    <a href="#test" data-view="test">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg><span>Test<span class="wide"> audio</span></span></a>
+    <div class="nav-fill"></div>
+    <div class="nav-device">
+      <span id="devName" class="nav-device-name">Axis device</span>
+      <span id="devAudio"><span id="devDot" class="dot dot-off"></span><span id="devAudioText">Connecting…</span></span>
+    </div>
+  </nav>
+
+  <main class="main">
+    <div id="connBanner" class="banner banner-bad" role="alert" hidden></div>
+
+    <!-- ================= LIVE ================= -->
+    <section id="view-live" class="view" aria-labelledby="h-live">
+      <header class="page-head">
+        <div><h1 id="h-live">Live</h1><p class="muted">What the microphone hears right now, scored every 0.48 s</p></div>
+        <div class="row gap12">
+          <span class="muted small">Detection events</span>
+          <button type="button" id="enabledToggle" class="toggle" aria-pressed="true"><span class="dot"></span><span id="enabledText">On</span></button>
+        </div>
+      </header>
+
+      <section id="heroActive" class="hero hero-active" aria-live="polite" hidden>
+        <div class="row gap20">
+          <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><rect x="10" y="8" width="44" height="40" rx="10" fill="none" stroke="#12161B" stroke-width="4"/><rect x="18" y="16" width="28" height="14" rx="3" fill="#12161B"/><circle cx="22" cy="40" r="3.5" fill="#12161B"/><circle cx="42" cy="40" r="3.5" fill="#12161B"/><path d="M18 50l-6 8M46 50l6 8" stroke="#12161B" stroke-width="4" stroke-linecap="round"/></svg>
+          <div class="col gap4">
+            <span class="eyebrow">Event active</span>
+            <span class="hero-title">Train passing</span>
+            <span id="heroActiveSub">Started –</span>
+          </div>
+        </div>
+        <div class="row gap32 wrap">
+          <div class="col"><span class="tile-label">Elapsed</span><span id="heroElapsed" class="hero-num">0:00</span></div>
+          <div class="col"><span class="tile-label">Confidence</span><span id="heroConf" class="hero-num">–</span></div>
+        </div>
+      </section>
+
+      <section id="heroIdle" class="hero hero-idle" aria-live="polite">
+        <div class="row gap20">
+          <svg id="heroIdleIcon" width="56" height="56" viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="25" fill="#E3F4EA"/><path d="M17 29l7 7 15-16" fill="none" stroke="#1E7A48" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="col gap4">
+            <span id="heroIdleEyebrow" class="eyebrow ok">Listening</span>
+            <span id="heroIdleTitle" class="hero-title">No train</span>
+            <span id="heroIdleSub" class="muted">No trains detected since the app started</span>
+          </div>
+        </div>
+        <div class="row gap32 wrap">
+          <div class="col"><span class="tile-label muted">Today</span><span id="heroToday" class="hero-num">0 trains</span></div>
+          <div class="col"><span class="tile-label muted">Score now</span><span id="heroScore" class="hero-num">–</span></div>
+        </div>
+      </section>
+
+      <div class="grid-live">
+        <section class="card span2" aria-labelledby="h-tl">
+          <div class="card-head">
+            <h2 id="h-tl">Train score · last 2 minutes</h2>
+            <div class="legend">
+              <span><i class="sw sw-score"></i>Score</span>
+              <span><i class="sw sw-thr"></i>Threshold <b id="thrLegend">–</b></span>
+              <span><i class="sw sw-event"></i>Event</span>
+            </div>
+          </div>
+          <canvas id="liveChart" class="chart" height="220" role="img" aria-label="Bar chart of the train score over the last two minutes"></canvas>
+          <div class="axis mono"><span>−2:00</span><span>−1:30</span><span>−1:00</span><span>−0:30</span><span>now</span></div>
+        </section>
+
+        <section class="card" aria-labelledby="h-sig">
+          <h2 id="h-sig">Signal</h2>
+          <div class="meter-block">
+            <div class="meter-label"><span class="muted">Sound level</span><span class="mono strong"><span id="levelVal">–</span> dBFS</span></div>
+            <div class="meter"><div id="levelBar" class="meter-fill fill-level"></div><div id="gateMark" class="meter-mark" title="Minimum level"></div></div>
+            <span id="gateText" class="small muted">–</span>
+          </div>
+          <div class="meter-block">
+            <div class="meter-label"><span class="muted">Horn / whistle</span><span id="hornVal" class="mono strong">–</span></div>
+            <div class="meter"><div id="hornBar" class="meter-fill fill-horn"></div><div id="hornMark" class="meter-mark" title="Horn threshold"></div></div>
+            <span id="hornLast" class="small muted"></span>
+          </div>
+          <div class="col gap10">
+            <span class="small muted">Sounds it recognizes now</span>
+            <ol id="topList" class="toplist"></ol>
+          </div>
+        </section>
+      </div>
+
+      <section class="card" aria-labelledby="h-rd">
+        <div class="card-head">
+          <h2 id="h-rd">Recent detections</h2>
+          <a href="#history" class="link-strong">View history →</a>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th scope="col">Started</th><th scope="col">Duration</th><th scope="col">Peak</th><th scope="col">Loudest</th><th scope="col">Horn</th></tr></thead>
+            <tbody id="recentBody"><tr><td colspan="5" class="muted">No detections yet</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="page-foot small muted">
+        <span id="healthText">–</span>
+        <span>Informational only — not a safety system.</span>
+      </footer>
+    </section>
+
+    <!-- ================= TUNING ================= -->
+    <section id="view-tuning" class="view" aria-labelledby="h-tune" hidden>
+      <header class="page-head">
+        <div><h1 id="h-tune">Tuning</h1><p class="muted">Changes apply immediately — no restart. Watch the preview while you adjust.</p></div>
+        <div id="presetGroup" class="segmented" role="radiogroup" aria-label="Site preset">
+          <button type="button" role="radio" data-preset="rural" aria-checked="false">Rural</button>
+          <button type="button" role="radio" data-preset="suburban" aria-checked="false">Suburban</button>
+          <button type="button" role="radio" data-preset="urban" aria-checked="false">Urban</button>
+          <button type="button" role="radio" data-preset="custom" aria-checked="true">Custom</button>
+        </div>
+      </header>
+
+      <div class="grid-tune">
+        <div class="col gap20 minw0">
+          <section class="card" aria-labelledby="h-det">
+            <div class="card-title"><h2 id="h-det">Detection</h2><p class="small muted">How confident the model must be before a sound counts as a train.</p></div>
+            <div class="field">
+              <div class="field-head"><label for="Sensitivity">Sensitivity</label><span class="mono strong"><output id="SensitivityOut">–</output> · threshold <span id="thrText">–</span></span></div>
+              <input type="range" id="Sensitivity" min="1" max="100" step="1" aria-describedby="previewText">
+              <div class="range-ends small muted"><span>Fewer false alarms</span><span>Catches quieter trains</span></div>
+            </div>
+            <div class="preview">
+              <div class="preview-head small"><span class="strong">Preview on the last <span id="previewSpan">–</span></span><span id="previewText" class="strong">Collecting data…</span></div>
+              <canvas id="previewChart" class="chart" height="96" role="img" aria-label="Recent score with the current threshold line"></canvas>
+            </div>
+          </section>
+
+          <section class="card" aria-labelledby="h-tim">
+            <div class="card-title"><h2 id="h-tim">Timing</h2><p class="small muted">Shape when an event starts and ends.</p></div>
+            <div class="timing-bar" aria-hidden="true">
+              <div class="tb tb-trig">Trigger <span id="tbTrig">–</span> s</div>
+              <div class="tb tb-active">Event active</div>
+              <div class="tb tb-rel">Release <span id="tbRel">–</span> s</div>
+              <div class="tb tb-cool">Cooldown <span id="tbCool">–</span> s</div>
+            </div>
+            <div class="range-ends small muted" aria-hidden="true"><span>train audible</span><span>event fires</span><span>train gone</span><span>event ends</span><span>ready</span></div>
+            <div class="grid2">
+              <div class="field"><div class="field-head"><label for="TriggerSeconds">Trigger duration</label><span class="mono strong"><output id="TriggerSecondsOut">–</output></span></div><input type="range" id="TriggerSeconds" min="0.5" max="30" step="0.5"><span class="small muted">Ignore anything shorter — trucks, thunder claps.</span></div>
+              <div class="field"><div class="field-head"><label for="ReleaseSeconds">Release time</label><span class="mono strong"><output id="ReleaseSecondsOut">–</output></span></div><input type="range" id="ReleaseSeconds" min="1" max="120" step="1"><span class="small muted">Bridges gaps between cars.</span></div>
+              <div class="field"><div class="field-head"><label for="CooldownSeconds">Cooldown</label><span class="mono strong"><output id="CooldownSecondsOut">–</output></span></div><input type="range" id="CooldownSeconds" min="0" max="300" step="5"><span class="small muted">Minimum gap before the next event.</span></div>
+              <div class="field"><div class="field-head"><label for="SmoothingSeconds">Smoothing</label><span class="mono strong"><output id="SmoothingSecondsOut">–</output></span></div><input type="range" id="SmoothingSeconds" min="0.5" max="10" step="0.5"><span class="small muted">Averages the score to steady it.</span></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="col gap20 minw0">
+          <section class="card" aria-labelledby="h-gate">
+            <div class="card-title"><h2 id="h-gate">Loudness gate</h2><p class="small muted">Set just above the quiet background so distant noise is ignored.</p></div>
+            <div class="field">
+              <div class="field-head"><label for="MinLevelDbfs">Minimum level</label><span class="mono strong"><output id="MinLevelDbfsOut">–</output></span></div>
+              <input type="range" id="MinLevelDbfs" min="-90" max="-10" step="1">
+            </div>
+            <div class="gate-viz" aria-hidden="true"><div id="gateBg" class="gate-range gate-bg"></div><div id="gateTrain" class="gate-range gate-train" hidden></div><div id="gateLive" class="gate-live"></div><div id="gateLine" class="gate-line"></div></div>
+            <div class="range-ends small muted"><span id="gateBgText">Background –</span><span id="gateTrainText">Trains: none recorded yet</span></div>
+          </section>
+
+          <section class="card" aria-labelledby="h-horn">
+            <div class="card-head start">
+              <div class="card-title"><h2 id="h-horn">Horn &amp; whistle</h2><p class="small muted">Horns sound 15–25 s before a crossing — an early warning.</p></div>
+              <label class="check"><input type="checkbox" id="HornTriggers">Horn starts an event</label>
+            </div>
+            <div class="field">
+              <div class="field-head"><label for="HornSensitivity">Horn sensitivity</label><span class="mono strong"><output id="HornSensitivityOut">–</output> · threshold <span id="hornThrText">–</span></span></div>
+              <input type="range" id="HornSensitivity" min="1" max="100" step="1">
+            </div>
+          </section>
+
+          <section class="card" aria-labelledby="h-src">
+            <h2 id="h-src">Score source</h2>
+            <div id="ScoreSource" class="radio-cards" role="radiogroup" aria-labelledby="h-src">
+              <button type="button" role="radio" data-value="head" aria-checked="false"><span class="strong">Trained train detector</span><span class="small muted">Recommended. Learned to tell trains from trucks, buses and aircraft.</span></button>
+              <button type="button" role="radio" data-value="yamnet" aria-checked="false"><span class="strong">General sound classes only</span><span class="small muted">Baseline. Very few false alarms, misses about half the trains.</span></button>
+              <button type="button" role="radio" data-value="max" aria-checked="false"><span class="strong">Higher of the two</span><span class="small muted">Most sensitive. Expect more false alarms.</span></button>
+            </div>
+          </section>
+
+          <section class="card card-dark">
+            <span class="strong">Act on detections</span>
+            <span>In the device's <b>System › Events › Rules</b>, choose the condition <b>Applications › Train Audio Detection › Train detected</b> to record, overlay, notify or switch an output.</span>
+          </section>
+        </div>
+      </div>
+
+      <footer class="savebar">
+        <span class="row gap8"><span id="saveDot" class="dot dot-ok"></span><span id="saveState">Loading settings…</span></span>
+        <button type="button" id="resetBtn" class="btn btn-secondary">Reset to defaults</button>
+      </footer>
+    </section>
+
+    <!-- ================= HISTORY ================= -->
+    <section id="view-history" class="view" aria-labelledby="h-hist" hidden>
+      <header class="page-head">
+        <div><h1 id="h-hist">History</h1><p id="histDate" class="muted">–</p></div>
+        <button type="button" id="exportBtn" class="btn btn-secondary"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Export CSV</button>
+      </header>
+
+      <div class="grid-stats" id="statTiles"></div>
+
+      <section class="card" aria-labelledby="h-day">
+        <h2 id="h-day">Last 24 hours</h2>
+        <div id="dayStrip" class="daystrip" role="img" aria-label="Timeline of detections in the last 24 hours"></div>
+        <div id="dayAxis" class="axis mono"></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-log">
+        <div class="card-head">
+          <h2 id="h-log">Detections</h2>
+          <div id="histFilters" class="chips" role="group" aria-label="Filter">
+            <button type="button" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" data-filter="horn" aria-pressed="false">With horn</button>
+            <button type="button" data-filter="unreviewed" aria-pressed="false">Not reviewed</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-wide">
+            <thead><tr><th scope="col">Started</th><th scope="col">Duration</th><th scope="col">Score</th><th scope="col">Loudest</th><th scope="col">Horn</th><th scope="col">Was it a train?</th></tr></thead>
+            <tbody id="histBody"><tr><td colspan="6" class="muted">No detections yet</td></tr></tbody>
+          </table>
+        </div>
+        <span class="small muted">Answers are stored with each event on the device and included in the CSV export — they become labels for retraining the model on this site. The device keeps the last 50 events in memory; export regularly.</span>
+      </section>
+    </section>
+
+    <!-- ================= TEST ================= -->
+    <section id="view-test" class="view" aria-labelledby="h-test" hidden>
+      <header class="page-head">
+        <div><h1 id="h-test">Test audio</h1><p class="muted">Check a recording from this site against the on-device model before relying on it.</p></div>
+      </header>
+
+      <section class="card" aria-labelledby="h-up">
+        <h2 id="h-up">1 · Choose a recording</h2>
+        <label id="dropZone" class="dropzone" for="wavFile">
+          <svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>
+          <span class="col gap2"><span class="strong">Drop an audio file or browse</span><span class="small muted">WAV, MP3 or OGG · up to 60 s · converted to 16 kHz mono in your browser</span></span>
+          <input id="wavFile" type="file" accept="audio/*,.wav" class="visually-hidden">
+        </label>
+        <div id="fileInfo" class="fileinfo" hidden>
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>
+          <span id="fileName" class="strong grow">–</span>
+          <span id="fileMeta" class="mono small muted">–</span>
+        </div>
+        <div class="row gap12 wrap">
+          <button type="button" id="analyzeBtn" class="btn btn-primary" disabled>Analyze on device</button>
+          <button type="button" id="injectBtn" class="btn btn-secondary" disabled>Play into live detector</button>
+        </div>
+        <span class="small muted"><b>Analyze</b> only scores the file. <b>Play into live detector</b> replaces the microphone for the clip's length, so real events and action rules fire — use it to test your rules. Both need administrator rights.</span>
+      </section>
+
+      <section id="injectBanner" class="banner banner-warn" role="status" hidden>
+        <span id="injectText" class="strong">Test audio is playing into the live detector</span>
+        <a href="#live" class="link-strong">Watch on Live →</a>
+      </section>
+
+      <section id="resultCard" class="card" aria-labelledby="h-res" hidden>
+        <h2 id="h-res">2 · Result</h2>
+        <div class="row gap16 wrap">
+          <div id="verdict" class="verdict">
+            <svg id="verdictIcon" width="36" height="36" viewBox="0 0 56 56" aria-hidden="true"></svg>
+            <span class="col gap2"><span id="verdictTitle" class="verdict-title">–</span><span id="verdictSub">–</span></span>
+          </div>
+          <div class="stat"><span class="small muted">Peak score</span><span id="resPeak" class="stat-num">–</span></div>
+          <div class="stat"><span class="small muted">Above threshold</span><span id="resAbove" class="stat-num">–</span></div>
+          <div class="stat"><span class="small muted">Model time</span><span id="resLatency" class="stat-num">–</span></div>
+        </div>
+        <canvas id="resultChart" class="chart" height="200" role="img" aria-label="Per-window train score across the recording"></canvas>
+        <div id="resultAxis" class="axis mono"></div>
+        <div id="resultChips" class="row gap8 wrap"></div>
+      </section>
+      <p id="testError" class="error" role="alert" hidden></p>
+    </section>
+  </main>
+</div>
+<script src="app.js?v=0.2.0"></script>
+</body>
+</html>

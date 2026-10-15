@@ -1,0 +1,7 @@
+*.eap
+*.o
+*.log
+.env.devices
+.git
+build
+app/debug

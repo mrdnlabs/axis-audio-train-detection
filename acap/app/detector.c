@@ -5,6 +5,8 @@
 
 #define HORN_MIN_WINDOWS 2
 
+static void end_event(detector_t* d, const det_config_t* c, double now_mono, double now_wall);
+
 void detector_config_defaults(det_config_t* c) {
     c->enabled          = true;
     c->sensitivity      = 50;
@@ -15,6 +17,7 @@ void detector_config_defaults(det_config_t* c) {
     c->horn_sensitivity = 50;
     c->horn_triggers    = true;
     c->cooldown_s       = 10.0;
+    c->max_event_s      = 600.0;
     c->score_source     = SCORE_HEAD;
 }
 
@@ -65,6 +68,14 @@ bool detector_set_label(detector_t* d, double start_wall, int8_t label) {
     return false;
 }
 
+bool detector_force_end(detector_t* d, const det_config_t* c, double now_mono, double now_wall) {
+    if (d->state != DET_ACTIVE)
+        return false;
+    d->below_s = 0.0;
+    end_event(d, c, now_mono, now_wall);
+    return true;
+}
+
 static float smooth_push(detector_t* d, float v, int n) {
     if (n < 1)
         n = 1;
@@ -81,10 +92,11 @@ static float smooth_push(detector_t* d, float v, int n) {
     return sum / (float)count;
 }
 
-static void start_event(detector_t* d, double now_wall, double lead_s, float level_db) {
+static void start_event(detector_t* d, double now_mono, double now_wall, double lead_s, float level_db) {
     d->state = DET_ACTIVE;
     memset(&d->cur, 0, sizeof(d->cur));
     d->cur.start_wall    = now_wall - lead_s;
+    d->cur.start_mono    = now_mono - lead_s;
     d->cur.peak_level_db = level_db;
     d->cur_score_sum     = 0.0;
     d->cur_windows       = 0;
@@ -93,11 +105,13 @@ static void start_event(detector_t* d, double now_wall, double lead_s, float lev
 }
 
 static void end_event(detector_t* d, const det_config_t* c, double now_mono, double now_wall) {
-    /* The train left when the score first dropped, i.e. release_s ago. */
-    d->cur.end_wall   = now_wall - d->below_s;
-    d->cur.duration_s = d->cur.end_wall - d->cur.start_wall;
+    (void)now_wall;
+    /* The train left when the score first dropped, i.e. below_s ago. Durations come
+     * from the monotonic clock so a wall-clock step (NTP) cannot corrupt them. */
+    d->cur.duration_s = (now_mono - d->below_s) - d->cur.start_mono;
     if (d->cur.duration_s < 0)
         d->cur.duration_s = 0;
+    d->cur.end_wall = d->cur.start_wall + d->cur.duration_s;
     d->cur.mean_score         = d->cur_windows ? (float)(d->cur_score_sum / d->cur_windows) : 0.0f;
     d->hist[d->hist_head]     = d->cur;
     d->hist_head              = (d->hist_head + 1) % DET_HISTORY_LEN;
@@ -171,7 +185,7 @@ det_result_t detector_update(detector_t* d,
             bool cooling = now_mono < d->cooldown_until;
             d->above_s   = above ? d->above_s + dt : 0.0;
             if (!cooling && (d->above_s >= c->trigger_s || (c->horn_triggers && r.horn_now))) {
-                start_event(d, now_wall, d->above_s < c->trigger_s ? d->above_s : c->trigger_s, level_db);
+                start_event(d, now_mono, now_wall, d->above_s < c->trigger_s ? d->above_s : c->trigger_s, level_db);
                 r.started = true;
             } else {
                 d->state = d->above_s > 0.0 ? DET_CANDIDATE : DET_IDLE;
@@ -194,6 +208,12 @@ det_result_t detector_update(detector_t* d,
         if (!r.started) {
             d->below_s = above ? 0.0 : d->below_s + dt;
             if (d->below_s >= c->release_s) {
+                end_event(d, c, now_mono, now_wall);
+                r.ended = true;
+            } else if (c->max_event_s > 0 && now_mono - d->cur.start_mono >= c->max_event_s) {
+                /* Persistent noise above the threshold must not latch the event forever. */
+                d->below_s    = 0.0;
+                d->cur.capped = true;
                 end_event(d, c, now_mono, now_wall);
                 r.ended = true;
             }

@@ -1,5 +1,7 @@
 /* FastCGI endpoints served through the device's Apache (auth + TLS inherited):
- *   status.cgi   (viewer)  GET  live state, scores, history, effective settings
+ *   status.cgi   (operator) GET  live state, scores, history, effective settings
+ *   timeline.cgi (operator) GET  ?since=<seq>: per-window key-sound scores newer than seq
+ *   label.cgi    (operator) POST ?start=<unix s>&label=train|false_alarm|none
  *   analyze.cgi  (admin)   POST 16 kHz mono PCM16 WAV (<= 60 s) -> per-window scores
  *                          POST ...?mode=inject -> play the WAV into the live detector
  *                          in place of the microphone (end-to-end test of events)
@@ -27,6 +29,10 @@ static double r3(double v) {
     return (double)((long long)(v * 1000.0 + (v >= 0 ? 0.5 : -0.5))) / 1000.0;
 }
 
+static double fin(double v) {
+    return isfinite(v) ? r3(v) : -1.0;
+}
+
 static void reply_json(FCGX_Request* req, int code, json_t* body) {
     char* text = json_dumps(body, JSON_COMPACT);
     FCGX_FPrintF(req->out,
@@ -44,9 +50,10 @@ static void reply_error(FCGX_Request* req, int code, const char* msg) {
 
 static json_t* event_json(const det_event_t* e) {
     json_t* label = e->label > 0 ? json_string("train") : (e->label < 0 ? json_string("false_alarm") : json_null());
-    return json_pack("{s:f,s:f,s:f,s:f,s:f,s:f,s:b,s:o}", "start", r3(e->start_wall), "end", r3(e->end_wall),
-                     "duration_s", r3(e->duration_s), "peak_score", r3(e->peak_score), "mean_score",
-                     r3(e->mean_score), "peak_level_db", r3(e->peak_level_db), "horn", e->horn, "label", label);
+    return json_pack("{s:f,s:f,s:f,s:f,s:f,s:f,s:b,s:b,s:b,s:o}", "start", r3(e->start_wall), "end",
+                     r3(e->end_wall), "duration_s", r3(e->duration_s), "peak_score", fin(e->peak_score),
+                     "mean_score", fin(e->mean_score), "peak_level_db", fin(e->peak_level_db), "horn", e->horn,
+                     "test", e->test, "capped", e->capped, "label", label);
 }
 
 static const char* source_name(score_source_t s) {
@@ -76,7 +83,7 @@ static void handle_status(FCGX_Request* req) {
     json_t* current = json_null();
     if (g_app.det.state == DET_ACTIVE) {
         current = event_json(&g_app.det.cur);
-        json_object_set_new(current, "elapsed_s", json_real(r3(g_app.last_infer_wall - g_app.det.cur.start_wall)));
+        json_object_set_new(current, "elapsed_s", json_real(r3(now_mono - g_app.det.cur.start_mono)));
     }
     json_t* o = json_pack(
         "{s:s,s:s,s:f,s:o,s:{s:f,s:f,s:f,s:f,s:f,s:f,s:f,s:b,s:b,s:o},s:o,s:o,"
@@ -103,6 +110,12 @@ static void handle_status(FCGX_Request* req) {
         "smoothing_s", r3(c->smoothing_s), "horn_sensitivity", c->horn_sensitivity, "horn_triggers",
         c->horn_triggers, "min_level_db", r3(c->min_level_db), "score_source", source_name(c->score_source),
         "cooldown_s", r3(c->cooldown_s), "horn_threshold", r3(detector_horn_threshold(c->horn_sensitivity)));
+    json_t* groups = json_object();
+    for (int i = 0; i < G_COUNT; i++)
+        json_object_set_new(groups, GROUP_NAMES[i], json_real(fin(g_app.last_groups[i])));
+    json_object_set_new(json_object_get(o, "scores"), "groups", groups);
+    json_object_set_new(json_object_get(o, "config"), "max_event_s", json_real(r3(c->max_event_s)));
+    json_object_set_new(o, "events_declared", json_boolean(g_atomic_int_get(&g_app.events_declared)));
     json_object_set_new(o, "events_total", json_integer((json_int_t)g_app.det.events_total));
     json_object_set_new(o, "horns_total", json_integer((json_int_t)g_app.det.horns_total));
     if (g_app.last_error[0])
@@ -115,10 +128,6 @@ static void handle_status(FCGX_Request* req) {
     }
     reply_json(req, 200, o);
     json_decref(o);
-}
-
-static double fin(double v) {
-    return isfinite(v) ? r3(v) : -1.0;
 }
 
 /* CSRF guard: require a non-"simple" content type (forces a CORS preflight, which the
@@ -230,11 +239,17 @@ static void handle_analyze_locked(FCGX_Request* req) {
             if (top[i].idx >= 0)
                 json_array_append_new(t, json_pack("{s:s,s:f}", "name", g_app.class_names[top[i].idx], "score",
                                                    fin(top[i].score)));
+        float groups[G_COUNT];
+        app_groups(out.scores, groups);
+        json_t* g = json_array();
+        for (int i = 0; i < G_COUNT; i++)
+            json_array_append_new(g, json_real(fin(groups[i])));
         json_array_append_new(
-            wins, json_pack("{s:f,s:f,s:f,s:f,s:f,s:f,s:o}", "t", r3((double)off / AUDIO_RATE), "prob",
+            wins, json_pack("{s:f,s:f,s:f,s:f,s:f,s:f,s:o,s:o}", "t", r3((double)off / AUDIO_RATE), "prob",
                             fin(out.train_prob), "rail", fin(app_max_of(out.scores, RAIL_IDX, RAIL_IDX_N)),
                             "horn", fin(app_max_of(out.scores, HORN_IDX, HORN_IDX_N)), "level_db",
-                            r3(app_level_dbfs(buf + off, WINDOW_SAMPLES)), "latency_ms", r3(out.latency_ms), "top", t));
+                            r3(app_level_dbfs(buf + off, WINDOW_SAMPLES)), "latency_ms", r3(out.latency_ms), "top", t,
+                            "groups", g));
         if (out.train_prob > max_prob)
             max_prob = out.train_prob;
         sum_prob += out.train_prob;
@@ -249,6 +264,40 @@ static void handle_analyze_locked(FCGX_Request* req) {
     json_t* o = json_pack("{s:f,s:I,s:f,s:f,s:o}", "duration_s", r3((double)n_samples / AUDIO_RATE), "windows_n",
                           (json_int_t)count, "max_prob", fin(max_prob), "mean_prob",
                           count ? fin(sum_prob / count) : 0.0, "windows", wins);
+    reply_json(req, 200, o);
+    json_decref(o);
+}
+
+/* timeline.cgi (viewer): GET ?since=<seq>. Compact rows, oldest first:
+ * [seq, wall, head, score, level_db, state, rail, train_horn, other_horn, vehicle, speech, music] */
+static void handle_timeline(FCGX_Request* req) {
+    const char* qs   = FCGX_GetParam("QUERY_STRING", req->envp);
+    guint64 since    = 0;
+    if (qs && g_str_has_prefix(qs, "since=")) {
+        char* end = NULL;
+        since     = g_ascii_strtoull(qs + 6, &end, 10);
+        if (!end || *end != '\0')
+            since = 0;
+    }
+    json_t* rows = json_array();
+    g_mutex_lock(&g_app.lock);
+    uint64_t newest = g_app.timeline_seq;
+    uint64_t oldest = newest > TIMELINE_LEN ? newest - TIMELINE_LEN + 1 : 1;
+    uint64_t from   = since + 1 > oldest ? since + 1 : oldest;
+    for (uint64_t s = from; s <= newest; s++) {
+        const timeline_entry_t* e = &g_app.timeline[(s - 1) % TIMELINE_LEN];
+        json_t* row               = json_pack("[I,f,f,f,f,i]", (json_int_t)e->seq, r3(e->wall), fin(e->head),
+                                              fin(e->score), fin(e->level_db), (int)e->state);
+        for (int i = 0; i < G_COUNT; i++)
+            json_array_append_new(row, json_real(fin(e->groups[i])));
+        json_array_append_new(rows, row);
+    }
+    g_mutex_unlock(&g_app.lock);
+    json_t* names = json_array();
+    for (int i = 0; i < G_COUNT; i++)
+        json_array_append_new(names, json_string(GROUP_NAMES[i]));
+    json_t* o = json_pack("{s:I,s:f,s:o,s:o}", "seq", (json_int_t)newest, "hop_s", (double)HOP_SAMPLES / AUDIO_RATE,
+                          "groups", names, "rows", rows);
     reply_json(req, 200, o);
     json_decref(o);
 }
@@ -311,18 +360,30 @@ static gpointer web_worker(gpointer data) {
     }
     for (;;) {
         if (FCGX_Accept_r(&req) != 0) {
-            syslog(LOG_WARNING, "[traindet] FCGX_Accept_r failed, retrying");
+            static gint64 last_log;
+            gint64 now = g_get_monotonic_time();
+            if (now - last_log > 60 * G_USEC_PER_SEC) {
+                syslog(LOG_WARNING, "[traindet] FCGX_Accept_r failed, retrying");
+                last_log = now;
+            }
             g_usleep(500000);
             continue;
         }
-        const char* uri = FCGX_GetParam("SCRIPT_NAME", req.envp);
-        if (!uri)
-            uri = FCGX_GetParam("REQUEST_URI", req.envp);
-        if (uri && strstr(uri, "/status.cgi"))
+        /* Route on the exact CGI name. Apache authorises by that name (cgi.conf), so a
+         * substring match on a longer path could let one access level reach another. */
+        const char* script = FCGX_GetParam("SCRIPT_NAME", req.envp);
+        const char* pinfo  = FCGX_GetParam("PATH_INFO", req.envp);
+        const char* base   = script ? strrchr(script, '/') : NULL;
+        base               = base ? base + 1 : script;
+        if (!base || (pinfo && *pinfo))
+            reply_error(&req, 404, "not found");
+        else if (!strcmp(base, "status.cgi"))
             handle_status(&req);
-        else if (uri && strstr(uri, "/analyze.cgi"))
+        else if (!strcmp(base, "timeline.cgi"))
+            handle_timeline(&req);
+        else if (!strcmp(base, "analyze.cgi"))
             handle_analyze(&req);
-        else if (uri && strstr(uri, "/label.cgi"))
+        else if (!strcmp(base, "label.cgi"))
             handle_label(&req);
         else
             reply_error(&req, 404, "not found");
@@ -342,7 +403,9 @@ bool web_start(void) {
     listen_sock = FCGX_OpenSocket(path, 8);
     if (listen_sock < 0)
         return false;
-    /* Apache must be able to connect to the socket (as in the SDK fastcgi example). */
+    /* Apache must be able to connect to the socket (as in the SDK fastcgi example).
+     * Trust assumption: the socket lives in the app's private runtime directory; local
+     * processes able to reach it are already inside the device's trust boundary. */
     chmod(path, S_IRWXU | S_IRWXG | S_IRWXO);
     for (int i = 0; i < WEB_THREADS; i++)
         g_thread_unref(g_thread_new("traindet-web", web_worker, NULL));

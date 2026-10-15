@@ -316,21 +316,24 @@ bool audio_wait_latest(audio_t* a, uint64_t* cursor, size_t min_new, float* dst,
 
 void audio_get_info(audio_t* a, audio_info_t* info) {
     g_mutex_lock(&a->lock);
-    g_free(a->inject_done);
+    float* done    = a->inject_done; /* freed after unlocking: munmap can be slow */
     a->inject_done = NULL;
     *info                 = a->info;
     info->inject_remaining = a->inject ? (double)(a->inject_len - a->inject_pos) / AUDIO_RATE : 0.0;
     g_mutex_unlock(&a->lock);
+    g_free(done);
 }
 
 void audio_inject(audio_t* a, const float* samples, size_t n) {
     float* copy = g_memdup2(samples, n * sizeof(float));
     g_mutex_lock(&a->lock);
-    g_free(a->inject);
-    g_free(a->inject_done);
-    a->inject_done = NULL;
-    a->inject      = copy;
-    a->inject_len = n;
-    a->inject_pos = 0;
+    float* old_inject = a->inject;
+    float* old_done   = a->inject_done;
+    a->inject_done    = NULL;
+    a->inject         = copy;
+    a->inject_len     = n;
+    a->inject_pos     = 0;
     g_mutex_unlock(&a->lock);
+    g_free(old_inject); /* outside the lock the realtime callback also takes */
+    g_free(old_done);
 }

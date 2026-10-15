@@ -21,6 +21,7 @@ typedef struct {
     int horn_sensitivity; /* 1..100 */
     bool horn_triggers;   /* a detected horn starts an event immediately */
     double cooldown_s;    /* minimum gap between events */
+    double max_event_s;   /* force-end an event after this long (0 = no limit) */
     score_source_t score_source;
 } det_config_t;
 
@@ -32,7 +33,10 @@ typedef struct {
     float mean_score;
     float peak_level_db;
     bool horn;
+    bool test;    /* raised while injected test audio replaced the microphone */
+    bool capped;  /* ended by max_event_s rather than by the release timer */
     int8_t label; /* operator feedback: 0 not reviewed, 1 train, -1 false alarm */
+    double start_mono; /* monotonic start, used for durations (wall clock may step) */
 } det_event_t;
 
 typedef struct {
@@ -88,3 +92,5 @@ const det_event_t* detector_history(const detector_t* d, int i);
 /* Sets the operator label of the history event that started at `start_wall`
  * (matched within 5 ms). Returns false if no such event is kept. */
 bool detector_set_label(detector_t* d, double start_wall, int8_t label);
+/* Ends an active event immediately (fail-safe). Returns true if one was active. */
+bool detector_force_end(detector_t* d, const det_config_t* c, double now_mono, double now_wall);

@@ -1,8 +1,11 @@
 """Deploy and verify train_detect on an Axis device.
 
 Credentials come from .env.devices (git-ignored): DEVICE_IP, DEVICE_USER, DEVICE_PASS.
+Optional: DEVICE_SCHEME=https|http (default https), DEVICE_CA=<path to the device's CA
+certificate> to verify TLS. Without DEVICE_CA the device's self-signed certificate is not
+verified (lab use); traffic is still encrypted.
 
-  python tools/device.py deploy build/train_detect_0_1_0_aarch64.eap
+  python tools/device.py deploy build/Train_Audio_Detection_<version>_aarch64.eap
   python tools/device.py verify            # health, model parity, settings, live event
   python tools/device.py status            # one status snapshot
   python tools/device.py logs [N]          # last N [traindet] syslog lines
@@ -15,7 +18,8 @@ import sys
 import time
 
 import requests
-from requests.auth import HTTPDigestAuth
+import urllib3
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 APP = "train_detect"
@@ -32,10 +36,15 @@ def env():
 
 
 E = env()
-BASE = f"http://{E['DEVICE_IP']}"
-AUTH = HTTPDigestAuth(E["DEVICE_USER"], E["DEVICE_PASS"])
+SCHEME = E.get("DEVICE_SCHEME", "https")
+BASE = f"{SCHEME}://{E['DEVICE_IP']}"
+# AXIS OS default policy offers Basic over HTTPS and Digest over HTTP; don't force Digest on TLS.
+AUTH = (HTTPBasicAuth if SCHEME == "https" else HTTPDigestAuth)(E["DEVICE_USER"], E["DEVICE_PASS"])
 S = requests.Session()
 S.auth = AUTH
+S.verify = E.get("DEVICE_CA") or False
+if S.verify is False and SCHEME == "https":
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def get(path, **kw):
@@ -190,8 +199,9 @@ def verify():
             if s["events_total"] > before and s["state"] != "active" and s["audio"]["inject_remaining_s"] == 0:
                 break
         s = status()
-        if s["events_total"] > before and seen_active:
-            ok(f"event fired and ended; newest history entry: {s['history'][0] if s['history'] else None}")
+        newest = s["history"][0] if s["history"] else None
+        if s["events_total"] > before and seen_active and s["state"] != "active" and newest and newest.get("test"):
+            ok(f"event fired, ended and was marked test=true: {newest}")
         else:
             fails += bad(f"no event from injected train audio (state {s['state']}, "
                          f"score {s['scores']['score']}, events {s['events_total']})")

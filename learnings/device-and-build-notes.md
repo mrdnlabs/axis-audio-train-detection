@@ -67,3 +67,15 @@ Command: `python tools/device.py verify`. **All checks passed.**
   - `label.cgi` without `X-Requested-With` returns 403; a GET returns 405.
   - `analyze.cgi` with a non-`audio/wav` Content-Type returns 403.
 - **Local UI iteration.** `tools/ui_preview.py` serves the HTML with a mock API, and `.claude/launch.json` holds the `ui-preview` config for the desktop app's browser pane.
+
+## Security audit lessons (v0.4.0, 2026-10-15)
+- **Never call `ax_parameter_set()` on the GLib main loop.**
+  - It blocks on parhand, while parhand may be waiting for the main loop to accept a change callback. Under rapid `param.cgi` updates this deadlocks until the 25 s D-Bus timeout, and the `param.cgi` request hangs.
+  - Use a worker thread instead.
+- **One AXParameter handle per app.** A second `ax_parameter_new()` in the same process aborts with "Unable to register objects on DBus" (SIGABRT, then a respawn loop until systemd's start limit). Share the single handle.
+- **Queued corrective writes must re-check the current value** before writing (compare-and-set), or they overwrite newer valid updates.
+- **Out-of-range `int` params.** For `int:min;max` params, param.cgi clamps an out-of-range value, *stores* it and still answers `# Error`. `string` params are stored verbatim (`nan`, `1e308`, empty), so validate them in the app.
+- **Apache routing.** AXIS OS 12.11 Apache returns 404 for any path after a FastCGI name (`label.cgi/analyze.cgi`). `SCRIPT_NAME` is always set. Route on the exact name anyway.
+- **HTTPS auth.** Under the default policy, Digest over HTTPS gives 401; use Basic over HTTPS, as in `tools/device.py`.
+- **ACAP crash loops.** systemd gives up after ~5 rapid failures ("Start request repeated too quickly") and the app shows Stopped. Redeploy or `control.cgi?action=start` to recover.
+- **Key-sound timeline.** `timeline.cgi` keeps ~5 minutes of per-window group scores, which is the data source for tuning horn and speech fusion. The 1 Hz `status.cgi` polling misses sub-second horn blasts.

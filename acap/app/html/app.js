@@ -3,19 +3,42 @@
   const STATUS_URL = 'status.cgi';
   const ANALYZE_URL = 'analyze.cgi';
   const LABEL_URL = 'label.cgi';
+  const TIMELINE_URL = 'timeline.cgi';
+  const TIMELINE_MAX = 625;  // ~5 min of 0.48 s windows (matches the device ring)
+  const LIVE_WINDOWS = 250;  // 2 min shown on Live
+  // Lanes of the key-sounds chart. g = index into the device's group array.
+  const LANES = [
+    { label: 'Train event', kind: 'state', color: '#F2B705' },
+    { label: 'Train score', kind: 'score', color: '#1F4FA8' },
+    { label: 'Rail sounds', g: 0, color: '#1F4FA8' },
+    { label: 'Train horn', g: 1, color: '#C25E00', horn: true },
+    { label: 'Other horns', g: 2, color: '#B3261E' },
+    { label: 'Road vehicles', g: 3, color: '#3B4652' },
+    { label: 'Speech', g: 4, color: '#6A3FB0' },
+    { label: 'Music', g: 5, color: '#1E7A48' }
+  ];
   const PARAM_URL = '/axis-cgi/param.cgi';
   const HOP_S = 0.48;
   const SERIES_MAX = 600; // ~10 min of 1 Hz status samples
   const PARAMS = ['Enabled', 'Sensitivity', 'TriggerSeconds', 'ReleaseSeconds', 'SmoothingSeconds',
-    'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity', 'HornTriggers', 'ScoreSource'];
+    'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity', 'HornTriggers', 'ScoreSource', 'MaxEventSeconds'];
   const DEFAULTS = { Enabled: 'yes', Sensitivity: '50', TriggerSeconds: '3', ReleaseSeconds: '8', SmoothingSeconds: '2',
-    MinLevelDbfs: '-65', CooldownSeconds: '10', HornSensitivity: '50', HornTriggers: 'yes', ScoreSource: 'head' };
+    MinLevelDbfs: '-65', CooldownSeconds: '10', HornSensitivity: '50', HornTriggers: 'yes', ScoreSource: 'head',
+    MaxEventSeconds: '600' };
   const PRESETS = {
     rural: { Sensitivity: '62', TriggerSeconds: '2', ReleaseSeconds: '6', SmoothingSeconds: '2', MinLevelDbfs: '-70', CooldownSeconds: '10' },
     suburban: { Sensitivity: '50', TriggerSeconds: '3', ReleaseSeconds: '8', SmoothingSeconds: '2', MinLevelDbfs: '-65', CooldownSeconds: '10' },
     urban: { Sensitivity: '35', TriggerSeconds: '6', ReleaseSeconds: '10', SmoothingSeconds: '3', MinLevelDbfs: '-55', CooldownSeconds: '20' }
   };
-  const UNITS = { TriggerSeconds: ' s', ReleaseSeconds: ' s', SmoothingSeconds: ' s', CooldownSeconds: ' s', MinLevelDbfs: ' dBFS' };
+  const UNITS = { TriggerSeconds: ' s', ReleaseSeconds: ' s', SmoothingSeconds: ' s', CooldownSeconds: ' s', MinLevelDbfs: ' dBFS', MaxEventSeconds: ' s' };
+  const FETCH_TIMEOUT_MS = 5000;
+  // fetch() with a timeout so a busy device shows "lost connection" instead of freezing the UI.
+  function fetchT(url, opts, ms) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms || FETCH_TIMEOUT_MS);
+    return fetch(url, Object.assign({ credentials: 'same-origin', signal: ctl.signal }, opts || {}))
+      .finally(() => clearTimeout(timer));
+  }
   const RAIL_RE = /train|rail|subway/i;
   const C = { score: '#1F4FA8', scoreSoft: '#9DB3DB', red: '#B3261E', grid: '#E3E6E9', event: '#FBE7A6', axis: '#C5CCD3' };
 
@@ -34,6 +57,8 @@
 
   let status = null;
   const series = [];
+  let timeline = [];          // {seq, t, head, score, level, state, g:[6]}
+  let timelineSeq = 0;
   let paramGroup = null;
   const params = {};          // last loaded/saved value per param (strings)
   const dirty = new Set();
@@ -92,26 +117,85 @@
     }
   }
 
+  function hexAlpha(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+
+  // rows: [{score, state, g:[...]}], right-aligned in `slots` columns.
+  function drawLanes(canvas, rows, opt) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    const c = canvas.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+    const gutter = 116, laneH = (h - 4) / LANES.length, cellH = laneH - 4;
+    const n = Math.max(opt.slots || rows.length, 1), cw = (w - gutter) / n, off = n - rows.length;
+    c.font = '12px ' + getComputedStyle(document.body).getPropertyValue('--sans');
+    c.textBaseline = 'middle';
+    LANES.forEach((lane, li) => {
+      const y = li * laneH + 2;
+      c.fillStyle = '#3B4652';
+      c.fillText(lane.label, 0, y + cellH / 2);
+      c.fillStyle = '#F1F3F5';
+      c.fillRect(gutter, y, w - gutter, cellH);
+      rows.forEach((r, i) => {
+        let v;
+        if (lane.kind === 'state') v = r.state === 2 ? 1 : (r.state === 1 ? 0.35 : 0);
+        else if (lane.kind === 'score') v = r.score;
+        else v = r.g[lane.g];
+        if (!(v > 0.02)) return;
+        const x = gutter + (off + i) * cw;
+        c.fillStyle = hexAlpha(lane.color, Math.min(1, 0.12 + 0.88 * v));
+        c.fillRect(x, y, Math.max(1, cw - (cw > 3 ? 0.5 : 0)), cellH);
+        const hit = (lane.kind === 'score' && opt.thr !== undefined && v >= opt.thr) || (lane.horn && opt.hornThr !== undefined && v >= opt.hornThr);
+        if (hit) { c.strokeStyle = '#12161B'; c.lineWidth = 1.5; c.strokeRect(x + 0.75, y + 0.75, Math.max(1, cw - 1.5), cellH - 1.5); }
+      });
+    });
+  }
+
+  function lanesSummary(rows) {
+    if (!rows.length) return 'Collecting…';
+    const peak = (k) => Math.max(...rows.map((r) => r.g[k]));
+    const share = (k) => Math.round(rows.filter((r) => r.g[k] >= 0.3).length / rows.length * 100);
+    return `Peaks in view — rail ${peak(0).toFixed(2)}, train horn ${peak(1).toFixed(2)}, other horns ${peak(2).toFixed(2)}, ` +
+      `road vehicles ${peak(3).toFixed(2)} · speech in ${share(4)}% of windows, music in ${share(5)}%`;
+  }
+
   // ------------------------------------------------------------------ detector simulation (mirrors detector.c)
+  // Mirrors detector.c: count-based moving average over round(smooth/0.48) windows,
+  // loudness gate, trigger/release timers, horn-triggered starts (>= 2 consecutive
+  // windows), cooldown and the max-duration cap. points are 0.48 s windows:
+  // [{t, raw, horn, level}]; sets p.smooth. Returns events [{start, end}].
   function simulate(points, cfg) {
-    // points: [{t, raw, level}] in time order; sets p.smooth. Returns events [{start, end}].
-    const thr = thrOf(cfg.sens), events = [];
-    let above = 0, below = 0, active = null, coolUntil = -Infinity;
+    const thr = thrOf(cfg.sens), hthr = hornThrOf(cfg.hornSens), events = [];
+    const n = clamp(Math.round(cfg.smooth / HOP_S), 1, 64);
+    let above = 0, below = 0, active = null, coolUntil = -Infinity, hornRun = 0;
     const buf = [];
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
-      const dt = i ? clamp(p.t - points[i - 1].t, 0.01, 5) : HOP_S;
-      const raw = p.level < cfg.minLevel ? 0 : p.raw;
-      buf.push({ t: p.t, v: raw });
-      while (buf.length > 1 && buf[0].t <= p.t - cfg.smooth) buf.shift();
-      const s = buf.reduce((a, b) => a + b.v, 0) / buf.length;
+      const dt = i ? clamp(p.t - points[i - 1].t, 0.01, 1.0) : HOP_S;
+      const gated = p.level < cfg.minLevel;
+      buf.push(gated ? 0 : p.raw);
+      if (buf.length > n) buf.shift();
+      const s = buf.reduce((a, b) => a + b, 0) / buf.length;
+      hornRun = !gated && (p.horn || 0) >= hthr ? hornRun + 1 : 0;
+      const hornNow = hornRun === 2;
       const isAbove = s >= thr;
       if (!active) {
         above = isAbove ? above + dt : 0;
-        if (p.t >= coolUntil && above >= cfg.trigger) { active = { start: p.t - Math.min(above, cfg.trigger) }; below = 0; }
+        if (p.t >= coolUntil && (above >= cfg.trigger || (cfg.hornTriggers && hornNow))) {
+          active = { start: p.t - Math.min(above, cfg.trigger) }; below = 0;
+        }
       } else {
         below = isAbove ? 0 : below + dt;
-        if (below >= cfg.release) { events.push({ start: active.start, end: p.t - below }); coolUntil = p.t + cfg.cool; active = null; above = 0; }
+        const capped = cfg.maxEvent > 0 && p.t - active.start >= cfg.maxEvent;
+        if (below >= cfg.release || capped) {
+          events.push({ start: active.start, end: p.t - (capped ? 0 : below) });
+          coolUntil = p.t + cfg.cool; active = null; above = 0; below = 0;
+        }
       }
       p.smooth = s;
     }
@@ -122,7 +206,8 @@
   function currentCfg() {
     const v = (id) => +$(id).value;
     return { sens: v('Sensitivity'), trigger: v('TriggerSeconds'), release: v('ReleaseSeconds'), smooth: v('SmoothingSeconds'),
-      minLevel: v('MinLevelDbfs'), cool: v('CooldownSeconds'), source: params.ScoreSource || 'head' };
+      minLevel: v('MinLevelDbfs'), cool: v('CooldownSeconds'), maxEvent: v('MaxEventSeconds'), hornSens: v('HornSensitivity'),
+      hornTriggers: $('HornTriggers').checked, source: params.ScoreSource || 'head' };
   }
   const rawOf = (p, source) => (source === 'yamnet' ? p.rail : (source === 'max' ? Math.max(p.head, p.rail) : p.head));
 
@@ -131,7 +216,7 @@
     for (const g of ['root.Train_detect', 'root.train_detect']) {
       const r = await fetch(`${PARAM_URL}?action=list&group=${encodeURIComponent(g)}`, { credentials: 'same-origin' });
       const t = await r.text();
-      if (r.ok && !/error/i.test(t) && t.includes('=')) {
+      if (r.ok && !/^#\s*Error/m.test(t) && t.includes('=')) {
         t.split(/\r?\n/).forEach((line) => {
           const m = line.match(/^(root\.[^.]+)\.([A-Za-z]+)=(.*)$/);
           if (m && PARAMS.includes(m[2])) { paramGroup = m[1]; params[m[2]] = m[3]; }
@@ -187,13 +272,15 @@
     saveTimer = setTimeout(saveDirty, 350);
   }
 
-  async function saveDirty() {
+  let saveChain = Promise.resolve();
+  function saveDirty() { saveChain = saveChain.then(saveDirtyNow); return saveChain; }
+  async function saveDirtyNow() {
     if (!dirty.size) return;
     const q = new URLSearchParams({ action: 'update' });
     [...dirty].forEach((p) => q.set(`${paramGroup}.${p}`, params[p]));
     dirty.clear();
     try {
-      const r = await fetch(`${PARAM_URL}?${q.toString()}`, { credentials: 'same-origin' });
+      const r = await fetchT(`${PARAM_URL}?${q.toString()}`);
       const t = (await r.text()).trim();
       if (r.ok && t === 'OK') setSave('ok', 'All changes saved to the device');
       else setSave('bad', `Save failed (${r.status}) ${t.slice(0, 80)}`);
@@ -215,11 +302,11 @@
     document.querySelectorAll('#presetGroup button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.preset === match)));
   }
 
-  ['Sensitivity', 'TriggerSeconds', 'ReleaseSeconds', 'SmoothingSeconds', 'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity'].forEach((p) => {
+  ['Sensitivity', 'TriggerSeconds', 'ReleaseSeconds', 'SmoothingSeconds', 'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity', 'MaxEventSeconds'].forEach((p) => {
     $(p).addEventListener('input', () => { showValue(p); params[p] = $(p).value; updatePresetUi(); renderTuning(); });
     $(p).addEventListener('change', () => queueSave(p));
   });
-  $('HornTriggers').addEventListener('change', () => queueSave('HornTriggers'));
+  $('HornTriggers').addEventListener('change', () => { queueSave('HornTriggers'); renderTuning(); });
   $('ScoreSource').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
     params.ScoreSource = b.dataset.value;
     $('ScoreSource').querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
@@ -261,7 +348,7 @@
 
   async function poll() {
     try {
-      const r = await fetch(STATUS_URL, { credentials: 'same-origin', cache: 'no-store' });
+      const r = await fetchT(STATUS_URL, { cache: 'no-store' });
       status = await readJson(r);
       const t = status.inference.last_wall || Date.now() / 1000;
       if (!series.length || series[series.length - 1].t !== t) {
@@ -269,6 +356,7 @@
           level: status.scores.level_db, active: status.state === 'active' });
         while (series.length > SERIES_MAX) series.shift();
       }
+      await pollTimeline();
       $('connBanner').hidden = true;
       render();
     } catch (e) {
@@ -279,6 +367,15 @@
     } finally {
       setTimeout(poll, 1000);
     }
+  }
+
+  async function pollTimeline() {
+    const r = await fetchT(`${TIMELINE_URL}?since=${timelineSeq}`, { cache: 'no-store' });
+    const j = await readJson(r);
+    if (j.seq < timelineSeq) timeline = []; // app restarted
+    j.rows.forEach((x) => timeline.push({ seq: x[0], t: x[1], head: x[2], score: x[3], level: x[4], state: x[5], g: x.slice(6) }));
+    if (timeline.length > TIMELINE_MAX) timeline = timeline.slice(-TIMELINE_MAX);
+    timelineSeq = j.seq;
   }
 
   function render() {
@@ -331,6 +428,10 @@
     text($('thrLegend'), sc.threshold.toFixed(2));
     const pts = series.slice(-120);
     drawBars($('liveChart'), pts.map((p) => p.score), { threshold: sc.threshold, shade: pts.map((p) => p.active), slots: 120 });
+
+    const tl = timeline.slice(-LIVE_WINDOWS);
+    drawLanes($('keysChart'), tl, { slots: LIVE_WINDOWS, thr: sc.threshold, hornThr: sc.horn_threshold });
+    text($('keysSummary'), lanesSummary(tl));
 
     text($('levelVal'), fmtDb(sc.level_db));
     $('levelBar').style.width = levelPct(sc.level_db) + '%';
@@ -390,7 +491,9 @@
     const cfg = currentCfg();
     const thr = thrOf(cfg.sens);
     // Preview: replay the buffered scores through the detector with the slider values.
-    const pts = series.map((p) => ({ t: p.t, raw: rawOf(p, cfg.source), level: p.level }));
+    // rail for the detector = max over rail classes incl. horn/whistle (as in the C code)
+    const pts = timeline.map((x) => ({ t: x.t, raw: rawOf({ head: x.head, rail: Math.max(x.g[0], x.g[1]) }, cfg.source),
+      horn: x.g[1], level: x.level }));
     if (pts.length >= 10) {
       const events = simulate(pts, cfg);
       const span = pts[pts.length - 1].t - pts[0].t;
@@ -498,7 +601,8 @@
       const mean = document.createElement('span'); mean.className = 'small muted'; mean.textContent = ` peak · ${e.mean_score.toFixed(2)} mean`;
       scoreTd.append(pk, mean);
       return row([cell(clock(e.start), 'num'), cell(`${e.duration_s.toFixed(1)} s`, 'num'), scoreTd,
-        cell(`${fmtDb(e.peak_level_db)} dBFS`, 'num'), cell(e.horn ? 'Yes' : '—'), fb]);
+        cell(`${fmtDb(e.peak_level_db)} dBFS`, 'num'),
+        cell((e.horn ? 'Yes' : '—') + (e.test ? ' · TEST' : '') + (e.capped ? ' · capped' : '')), fb]);
     }) : [emptyRow(6, hist.length ? 'Nothing matches this filter' : 'No detections yet')]));
   }
 
@@ -506,9 +610,10 @@
 
   $('exportBtn').addEventListener('click', () => {
     if (!status) return;
-    const lines = [['start_utc', 'end_utc', 'duration_s', 'peak_score', 'mean_score', 'peak_level_dbfs', 'horn', 'label'].join(',')];
+    const lines = [['start_utc', 'end_utc', 'duration_s', 'peak_score', 'mean_score', 'peak_level_dbfs', 'horn', 'test', 'capped', 'label'].join(',')];
     status.history.forEach((e) => lines.push([new Date(e.start * 1000).toISOString(), new Date(e.end * 1000).toISOString(),
-      e.duration_s.toFixed(1), e.peak_score.toFixed(3), e.mean_score.toFixed(3), e.peak_level_db.toFixed(1), e.horn ? 1 : 0, e.label || ''].join(',')));
+      e.duration_s.toFixed(1), e.peak_score.toFixed(3), e.mean_score.toFixed(3), e.peak_level_db.toFixed(1), e.horn ? 1 : 0,
+      e.test ? 1 : 0, e.capped ? 1 : 0, e.label || ''].join(',')));
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/csv' }));
     a.download = `train-detections-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -583,6 +688,8 @@
 
   $('injectBtn').addEventListener('click', async () => {
     if (!testWav) return;
+    if (!window.confirm('Play this file into the live detector?\n\nThe microphone is ignored while it plays, and real ' +
+      'events fire (marked as test events) — action rules such as recordings or notifications may run.')) return;
     $('testError').hidden = true; busy(true);
     try {
       const r = await fetch(ANALYZE_URL + '?mode=inject', { method: 'POST', body: testWav, credentials: 'same-origin', headers: { 'Content-Type': 'audio/wav' } });
@@ -606,7 +713,7 @@
     const res = lastResult, w = res.windows;
     const cfg = currentCfg();
     const thr = thrOf(cfg.sens);
-    const pts = w.map((x) => ({ t: x.t, raw: rawOf({ head: x.prob, rail: x.rail }, cfg.source), level: x.level_db }));
+    const pts = w.map((x) => ({ t: x.t, raw: rawOf({ head: x.prob, rail: x.rail }, cfg.source), horn: x.horn, level: x.level_db }));
     const events = simulate(pts, cfg);
     $('resultCard').hidden = false;
     const v = $('verdict'), icon = $('verdictIcon');
@@ -630,6 +737,11 @@
     text($('resLatency'), `${Math.round(w.reduce((a, x) => a + x.latency_ms, 0) / Math.max(1, w.length))} ms`);
     drawBars($('resultChart'), pts.map((p) => p.smooth), { threshold: thr, thresholdLabel: true,
       shade: pts.map((p) => events.some((e) => p.t >= e.start && p.t <= e.end)) });
+    if (w.length && w[0].groups) {
+      const inEvent = (t) => events.some((e) => t >= e.start && t <= e.end);
+      drawLanes($('resultLanes'), w.map((x, i) => ({ score: pts[i].smooth, state: inEvent(x.t) ? 2 : 0, g: x.groups })),
+        { slots: w.length, thr, hornThr: hornThrOf(+$('HornSensitivity').value) });
+    }
     const dur = res.duration_s;
     $('resultAxis').replaceChildren(...[0, 0.25, 0.5, 0.75, 1].map((f) => { const s = document.createElement('span'); s.textContent = mmss(dur * f); return s; }));
     const best = {};

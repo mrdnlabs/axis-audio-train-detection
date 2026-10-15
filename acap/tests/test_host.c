@@ -139,6 +139,38 @@ static void test_history_ring(void) {
     CHECK(!detector_set_label(&d, start + 5.0, 1), "unknown start rejected");
 }
 
+static void test_cap_forceend_clock(void) {
+    detector_t d;
+    det_config_t c;
+    run_t r = {0};
+    detector_init(&d);
+    detector_config_defaults(&c);
+    c.max_event_s = 60;
+    feed(&d, &c, &r, 400, 0.9f, 0, -30); /* ~190 s of constant "train" noise */
+    CHECK(r.started >= 2 && r.ended >= 2, "max duration caps and restarts (started %d ended %d)", r.started, r.ended);
+    const det_event_t* e = detector_history(&d, 0);
+    CHECK(e && e->capped && e->duration_s <= 61, "capped event ~60 s (%.1f)", e ? e->duration_s : -1);
+
+    detector_init(&d);
+    r = (run_t){0};
+    c.max_event_s = 0;
+    feed(&d, &c, &r, 20, 0.9f, 0, -30);
+    CHECK(d.state == DET_ACTIVE, "active before force end");
+    CHECK(detector_force_end(&d, &c, r.t, 1e9 + r.t), "force end returns true");
+    CHECK(d.state == DET_IDLE && d.hist_count == 1, "force end records history");
+    CHECK(!detector_force_end(&d, &c, r.t, 1e9 + r.t), "force end when idle is a no-op");
+
+    /* wall clock steps back 1 h mid-event: duration must come from the monotonic clock */
+    detector_init(&d);
+    double t = 0;
+    for (int i = 0; i < 40; i++, t += DT)
+        detector_update(&d, &c, t, (i < 20 ? 5e9 : 5e9 - 3600) + t, DT, 0.9f, 0, 0, -30);
+    for (int i = 0; i < 30; i++, t += DT)
+        detector_update(&d, &c, t, 5e9 - 3600 + t, DT, 0.0f, 0, 0, -40);
+    e = detector_history(&d, 0);
+    CHECK(e && e->duration_s > 10 && e->duration_s < 25, "duration immune to wall-clock step (%.1f)", e ? e->duration_s : -1);
+}
+
 static void put32(unsigned char* p, unsigned v) {
     p[0] = v & 255; p[1] = (v >> 8) & 255; p[2] = (v >> 16) & 255; p[3] = (v >> 24) & 255;
 }
@@ -187,6 +219,7 @@ int main(void) {
     test_level_gate_and_disable();
     test_horn_and_cooldown();
     test_history_ring();
+    test_cap_forceend_clock();
     test_wav();
     printf(failures ? "%d FAILURES\n" : "all host tests passed\n", failures);
     return failures ? 1 : 0;

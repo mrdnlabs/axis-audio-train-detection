@@ -14,6 +14,20 @@
 #define WINDOW_SAMPLES MODEL_INPUT_SAMPLES
 #define HOP_SAMPLES 7680
 #define TOP_K 5
+#define TIMELINE_LEN 625 /* ~5 min of 0.48 s windows */
+
+/* Key sound groups shown on the timeline (max YAMNet score within each group). */
+enum { G_RAIL, G_TRAIN_HORN, G_OTHER_HORN, G_VEHICLE, G_SPEECH, G_MUSIC, G_COUNT };
+
+typedef struct {
+    uint64_t seq;
+    double wall;
+    float head;
+    float score; /* smoothed score the detector used */
+    float level_db;
+    float groups[G_COUNT];
+    uint8_t state; /* det_state_t */
+} timeline_entry_t;
 
 typedef struct {
     int idx;
@@ -42,6 +56,10 @@ typedef struct {
     double latency_ms_max;
     double last_infer_wall;
     char last_error[160];
+    gint events_declared; /* atomic: AXEvent declaration completed */
+    float last_groups[G_COUNT];
+    timeline_entry_t timeline[TIMELINE_LEN];
+    uint64_t timeline_seq; /* seq of the newest entry; 0 = empty */
 } app_t;
 
 extern app_t g_app;
@@ -55,6 +73,8 @@ extern const int RAIL_IDX[];
 extern const int RAIL_IDX_N;
 extern const int HORN_IDX[];
 extern const int HORN_IDX_N;
+extern const char* const GROUP_NAMES[G_COUNT];
+void app_groups(const float* scores, float* groups);
 
 /* web.c */
 bool web_start(void);

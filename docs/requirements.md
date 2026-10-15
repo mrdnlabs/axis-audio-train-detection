@@ -23,7 +23,7 @@
 | F5 | Horn sub-detector: max(YAMNet Train horn, Train whistle) ≥ horn threshold for ≥2 consecutive windows. Sets the `horn` flag on the active event and in status. |
 | F6 | Declare a stateful **AXEvent** "Train detected" (`Active` true/false, `Confidence`, `Horn`) usable in Axis action rules (record, overlay, notify, output port). |
 | F7 | Keep an in-memory history of the last 50 detections: start, end, duration, peak and mean confidence, peak level, horn. |
-| F8 | `status.cgi` (viewer): live state, scores, level, top YAMNet classes, inference latency, counters, history, effective settings. |
+| F8 | `status.cgi` (operator), plus `timeline.cgi` (operator, per-window key-sound history for about 5 minutes): live state, scores, level, top YAMNet classes, inference latency, counters, history, effective settings. |
 | F9 | `analyze.cgi` (admin, POST WAV 16 kHz mono PCM16, ≤ 60 s): run the same model on uploaded audio and return per-window scores. Used for on-device verification and site tuning. `?mode=inject` plays the WAV into the live detector in place of the mic, for end-to-end event tests. Requires `Content-Type: audio/wav` and a same-origin request (CSRF guard). |
 | F10 | Settings page with sliders. All settings take effect live, with no restart. |
 | F11 | Structured syslog lines (`[traindet] ...`) for state transitions and errors. Rate-limited. |
@@ -40,6 +40,7 @@
 | `MinLevelDbfs` | slider | −90 to −10 | −65 | Windows quieter than this are scored 0 (loudness gate). |
 | `HornSensitivity` | slider | 1–100 | 50 | Horn threshold, `0.6 − 0.0055 × (S−1)`. |
 | `CooldownSeconds` | slider | 0–300 s | 10 | Minimum gap after an event ends before a new one can start. |
+| `MaxEventSeconds` | slider | 0–3600 s | 600 | Force-ends an event after this long (0 = no limit). |
 | `HornTriggers` | toggle | yes/no | yes | A detected train horn starts an event immediately. Horns precede the train by 15–25 s at US crossings. |
 | `ScoreSource` | select | head / yamnet / max | head | `head` = trained head. `yamnet` = max of YAMNet rail classes (baseline). `max` = the larger of the two. |
 
@@ -49,7 +50,7 @@
 |---|---|
 | N1 | CPU: one inference per 0.48 s. Target <150 ms per inference on ARTPEC-8 (≈30% of one core worst case). |
 | N2 | Memory under 100 MB RSS. Model ≤ 20 MB. |
-| N3 | Runs as `respawn`, starts at boot, and recovers if PipeWire or larod restarts. |
+| N3 | Runs as `respawn` and starts at boot. Recovery:<br>• After about 10 s of consecutive inference failures, or 60 s without audio that had been streaming, it ends any active event (`active=false` is sent) and exits so it is respawned.<br>• If no audio has arrived since start, it reports that in status instead of crash-looping.<br>• Startup failures back off for 30 s before exiting. |
 | N4 | Security: endpoints only via Apache FastCGI with device auth. Settings and analyze require admin; status requires viewer. No new ports, no stored credentials, input validated (size, format), output JSON-escaped. |
 | N5 | Detection latency: event fires within TriggerSeconds + SmoothingSeconds/2 + 0.5 s of the train becoming dominant. |
 

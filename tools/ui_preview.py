@@ -17,7 +17,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "acap", "ap
 T0 = time.time()
 PARAMS = {"Enabled": "yes", "Sensitivity": "50", "TriggerSeconds": "3", "ReleaseSeconds": "8",
           "SmoothingSeconds": "2", "MinLevelDbfs": "-65", "CooldownSeconds": "10", "HornSensitivity": "50",
-          "HornTriggers": "yes", "ScoreSource": "head"}
+          "HornTriggers": "yes", "ScoreSource": "head", "MaxEventSeconds": "600"}
 HISTORY = [
     {"start": T0 - 3600 * h - 600, "end": T0 - 3600 * h - 600 + d, "duration_s": d, "peak_score": p,
      "mean_score": round(p - 0.3, 3), "peak_level_db": lv, "horn": hn, "label": None}
@@ -28,6 +28,30 @@ HISTORY = [
 
 def thr(s):
     return 0.95 - 0.009 * (int(s) - 1)
+
+
+def groups_at(t):
+    ph = (t - T0) % 90
+    act = 20 <= ph < 50
+    return [0.7 + 0.2 * math.sin(t) if act else 0.02,                     # rail
+            0.55 if 30 <= ph < 31.5 else 0.01,                            # train horn
+            0.7 if 34 <= ph < 35 else 0.02,                               # other horns
+            0.6 if 5 <= ph < 15 else (0.3 if act else 0.03),             # road vehicles
+            0.85 if 60 <= ph < 75 else 0.02,                              # speech
+            0.4 if 76 <= ph < 85 else 0.01]                               # music
+
+
+def timeline(since):
+    now = time.time()
+    newest = int((now - T0) / 0.48) + 1
+    rows = []
+    for seq in range(max(since + 1, newest - 624, 1), newest + 1):
+        t = T0 + (seq - 1) * 0.48
+        ph = (t - T0) % 90
+        act = 20 <= ph < 50
+        sc = 0.6 + 0.3 * math.sin(math.pi * (ph - 20) / 30) if act else 0.05
+        rows.append([seq, t, sc, sc, -20.0 if act else -60.0, 2 if act else 0] + groups_at(t))
+    return {"seq": newest, "hop_s": 0.48, "groups": ["rail", "train_horn", "other_horn", "vehicle", "speech", "music"], "rows": rows}
 
 
 def status():
@@ -91,6 +115,8 @@ class Handler(SimpleHTTPRequestHandler):
     def handle_api(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if u.path.endswith("/timeline.cgi"):
+            return self.send_json(timeline(int(q.get("since", 0))))
         if u.path.endswith("/status.cgi"):
             return self.send_json(status())
         if u.path == "/axis-cgi/param.cgi":
@@ -121,7 +147,8 @@ class Handler(SimpleHTTPRequestHandler):
                 p = 0.6 + 0.33 * math.sin(math.pi * f) if 0.1 < f < 0.95 else 0.1
                 wins.append({"t": i * 0.48, "prob": p, "rail": p * 0.7, "horn": 0.02, "level_db": -20.0, "latency_ms": 131,
                              "top": [{"name": "Train", "score": p}, {"name": "Rail transport", "score": p * 0.8},
-                                     {"name": "Rumble", "score": 0.2}]})
+                                     {"name": "Rumble", "score": 0.2}],
+                             "groups": [p * 0.8, 0.5 if i in (8, 9) else 0.01, 0.6 if i == 14 else 0.02, 0.2, 0.05, 0.01]})
             return self.send_json({"duration_s": dur, "windows_n": k, "max_prob": max(w["prob"] for w in wins),
                                    "mean_prob": sum(w["prob"] for w in wins) / k, "windows": wins})
         return False

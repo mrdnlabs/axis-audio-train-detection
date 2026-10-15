@@ -15,7 +15,7 @@
             "vendorId": "0000000000",
             "vendorUrl": "https://github.com/mrdnlabs",
             "runMode": "respawn",
-            "version": "0.2.0",
+            "version": "0.4.0",
             "compatibleOsVersions": [
                 {
                     "min": "12.11.72",
@@ -27,7 +27,7 @@
             "settingPage": "index.html",
             "httpConfig": [
                 {
-                    "access": "viewer",
+                    "access": "operator",
                     "name": "status.cgi",
                     "type": "fastCgi"
                 },
@@ -39,6 +39,11 @@
                 {
                     "access": "operator",
                     "name": "label.cgi",
+                    "type": "fastCgi"
+                },
+                {
+                    "access": "operator",
+                    "name": "timeline.cgi",
                     "type": "fastCgi"
                 }
             ],
@@ -52,6 +57,7 @@
                 { "name": "CooldownSeconds", "default": "10", "type": "int:min=0;max=300" },
                 { "name": "HornSensitivity", "default": "50", "type": "int:min=1;max=100" },
                 { "name": "HornTriggers", "default": "yes", "type": "bool:no,yes" },
+                { "name": "MaxEventSeconds", "default": "600", "type": "int:min=0;max=3600" },
                 { "name": "ScoreSource", "default": "head", "type": "enum:head|Trained detector, yamnet|YAMNet rail classes, max|Higher of the two" }
             ]
         }

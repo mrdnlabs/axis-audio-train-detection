@@ -15,7 +15,7 @@
             "vendorId": "0000000000",
             "vendorUrl": "https://github.com/mrdnlabs",
             "runMode": "respawn",
-            "version": "0.4.0",
+            "version": "0.5.2",
             "compatibleOsVersions": [
                 {
                     "min": "12.11.72",
@@ -58,6 +58,10 @@
                 { "name": "HornSensitivity", "default": "50", "type": "int:min=1;max=100" },
                 { "name": "HornTriggers", "default": "yes", "type": "bool:no,yes" },
                 { "name": "MaxEventSeconds", "default": "600", "type": "int:min=0;max=3600" },
+                { "name": "SpeechSuppression", "default": "100", "type": "int:min=0;max=100" },
+                { "name": "RequireRailSound", "default": "no", "type": "bool:no,yes" },
+                { "name": "MinRiseDb", "default": "0", "type": "int:min=0;max=20" },
+                { "name": "HornIncludesOtherHorns", "default": "no", "type": "bool:no,yes" },
                 { "name": "ScoreSource", "default": "head", "type": "enum:head|Trained detector, yamnet|YAMNet rail classes, max|Higher of the two" }
             ]
         }

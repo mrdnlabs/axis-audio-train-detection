@@ -49,7 +49,7 @@ Command: `python tools/device.py verify`. **All checks passed.**
 - **Parity.** On-device vs host TFLite: max abs diff **5e-4** across 6 held-out clips. The small offset is CPU float/XNNPACK numerics.
 - **Settings.** A `param.cgi` update reached the app live through the AXParameter callback; `status.cgi` showed the change in under 1.5 s.
   - Saving through `param.cgi` re-fires the callback for **every** app parameter, not just the changed one; see the syslog.
-- **Event.** `GetEventInstances` lists `tnsaxis:CameraApplicationPlatform/TrainDetect/TrainDetected`.
+- **Event.** `GetEventInstances` lists `tnsaxis:CameraApplicationPlatform/TrainDetect/TrainDetected`. In v0.5.2 this was replaced by `TrainPresent`, `HornDetected` and `TrainPassed`; see "Action rules" below.
 - **End-to-end.** Injected 28.7 s of held-out train audio (`analyze.cgi?mode=inject`). The run produced `TRAIN START score=0.84` at +4.8 s, an event, and `TRAIN END duration=26.0s peak=0.93`.
 - **Ambient check (quiet room).** About −59 dBFS. The top classes were Silence, Noise and Hum, with a train score of about 0.04.
 - **Not verified:**
@@ -79,3 +79,21 @@ Command: `python tools/device.py verify`. **All checks passed.**
 - **HTTPS auth.** Under the default policy, Digest over HTTPS gives 401; use Basic over HTTPS, as in `tools/device.py`.
 - **ACAP crash loops.** systemd gives up after ~5 rapid failures ("Start request repeated too quickly") and the app shows Stopped. Redeploy or `control.cgi?action=start` to recover.
 - **Key-sound timeline.** `timeline.cgi` keeps ~5 minutes of per-window group scores, which is the data source for tuning horn and speech fusion. The 1 Hz `status.cgi` polling misses sub-second horn blasts.
+
+## AXEvent: stateful event verified (v0.5.0)
+- **Declaration.** `ax_event_handler_declare2(..., stateless=FALSE, "active", ...)` with `active` marked as data produces `aev:isProperty="true"`, and `active` gets `isPropertyState="true"` in `GetEventInstances`. That is what the rules engine needs for "while active" conditions.
+- **Observed on an ONVIF pull-point.**
+  - On subscribe: `Initialized` carrying the current state.
+  - On transitions: `Changed active=1` and `Changed active=0`.
+  - Example: inject at +0 s, active at +4.5 s, inactive at +45.7 s for a 37.8 s clip with 8 s release.
+- **Pull-point gotchas.**
+  - `CreatePullPointSubscription` on `/vapix/services` returns the address `/onvif/services`, which requires a separate **ONVIF user** (401 for the root account).
+  - `PullMessages` sent to `/vapix/services` with the `SubscriptionId` reference parameter (`xmlns="http://www.axis.com/2009/event"`, `wsa:IsReferenceParameter="true"`) works with the normal device login.
+
+## Action rules with ACAP property events (v0.5.2)
+- **Rule creation API.** `AddActionRule` (VAPIX action1 SOAP on `/vapix/services`) with the condition `TopicExpression` plus an ItemFilter, e.g. `boolean(//SimpleItem[@Name="active" and @Value="1"])`, and **no StartEvent** gives a "while" rule. The `com.axis.action.unlimited.*` templates act for as long as the condition holds.
+- **Topic schemas are sticky.** **The event system keeps every schema a topic has ever been declared with, until reboot.** After the app changed `TrainDetected`'s data keys (v0.3 → v0.4 added `test`), `AddActionRule` failed with `InvalidConditionFilterFault: expression matched multiple property events`. Without a filter, it failed with "property state key's value not specified".
+  - Fix: never change a declared topic's keys. Use a new topic name instead (now `TrainPresent`), or reboot.
+  - Keep property events to the state key only, and move extra data into separate stateless events.
+- **Overlay-text action.** `com.axis.action.unlimited.set_overlay` (params `text`, `channels`, `index`) writes into dynamic text slot `#D<index>`. A text overlay containing `#D1` must exist to see it; `/axis-cgi/dynamicoverlay/dynamicoverlay.cgi` `addText` / `remove`.
+- **Verified with a temporary rule.** Overlay text appeared only while an injected train made TrainPresent active. The rule, action and overlay were removed afterwards (`tools/action_rules.py` lists rules).

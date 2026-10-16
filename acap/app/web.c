@@ -114,7 +114,17 @@ static void handle_status(FCGX_Request* req) {
     for (int i = 0; i < G_COUNT; i++)
         json_object_set_new(groups, GROUP_NAMES[i], json_real(fin(g_app.last_groups[i])));
     json_object_set_new(json_object_get(o, "scores"), "groups", groups);
-    json_object_set_new(json_object_get(o, "config"), "max_event_s", json_real(r3(c->max_event_s)));
+    json_t* cfgo = json_object_get(o, "config");
+    json_object_set_new(cfgo, "max_event_s", json_real(r3(c->max_event_s)));
+    json_object_set_new(cfgo, "speech_suppression", json_real(r3(g_app.fcfg.speech_suppression)));
+    json_object_set_new(cfgo, "require_rail", json_boolean(g_app.fcfg.require_rail));
+    json_object_set_new(cfgo, "min_rise_db", json_real(r3(g_app.fcfg.min_rise_db)));
+    json_object_set_new(cfgo, "horn_includes_other_horns", json_boolean(g_app.fcfg.other_horns));
+    json_t* sco = json_object_get(o, "scores");
+    json_object_set_new(sco, "fused", json_real(fin(g_app.last_fusion.score)));
+    json_object_set_new(sco, "rail_recent", json_real(fin(g_app.last_fusion.rail_recent)));
+    json_object_set_new(sco, "background_db", json_real(fin(g_app.last_fusion.background_db)));
+    json_object_set_new(sco, "below_rise", json_boolean(g_app.last_fusion.below_rise));
     json_object_set_new(o, "events_declared", json_boolean(g_atomic_int_get(&g_app.events_declared)));
     json_object_set_new(o, "events_total", json_integer((json_int_t)g_app.det.events_total));
     json_object_set_new(o, "horns_total", json_integer((json_int_t)g_app.det.horns_total));

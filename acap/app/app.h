@@ -8,6 +8,7 @@
 
 #include "audio.h"
 #include "detector.h"
+#include "fusion.h"
 #include "model.h"
 
 #define APP_NAME "train_detect"
@@ -42,6 +43,9 @@ typedef struct {
 
     GMutex lock;
     det_config_t cfg;
+    fusion_config_t fcfg;
+    fusion_t fusion;
+    fusion_result_t last_fusion;
     detector_t det;
     det_result_t last;
     float last_head;

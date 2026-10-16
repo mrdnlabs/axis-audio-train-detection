@@ -114,8 +114,15 @@ def main():
               f"mean_prob={np.mean([x['prob'] for x in res]):.3f}")
     json.dump(expected, open(os.path.join(tv_dir, "expected.json"), "w"), indent=1)
 
-    # End-to-end clip for the live inject test: the held-out train recording (<= 30 s)
-    # with the longest run of smoothed (4-window) score >= 0.6.
+    # End-to-end clip for the live inject test. Prefer a real trackside pass-by supplied
+    # as data/e2e_override.wav (e.g. the CC0 Wikimedia Commons recording "Railway crossing
+    # near Woodville"); otherwise use the held-out train recording (<= 30 s) with the
+    # longest run of smoothed (4-window) score >= 0.6.
+    override = os.path.join(DATA, "e2e_override.wav")
+    if os.path.exists(override):
+        write_wav16(os.path.join(tv_dir, "e2e_train.wav"), read_wav16(override)[:16000 * 40])
+        print("e2e clip: data/e2e_override.wav")
+        pos = []
     best = (0, None, None)
     for r in pos:
         wave = read_wav16(os.path.join(DATA, r["path"]))[:16000 * 30]

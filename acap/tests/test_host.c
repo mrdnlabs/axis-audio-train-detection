@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../app/detector.h"
+#include "../app/fusion.h"
 #include "../app/wav.h"
 
 static int failures;
@@ -171,6 +172,54 @@ static void test_cap_forceend_clock(void) {
     CHECK(e && e->duration_s > 10 && e->duration_s < 25, "duration immune to wall-clock step (%.1f)", e ? e->duration_s : -1);
 }
 
+static void test_fusion(void) {
+    fusion_t f;
+    fusion_config_t c;
+    fusion_init(&f);
+    fusion_config_defaults(&c);
+    /* speech without rail evidence is suppressed */
+    fusion_result_t r = fusion_step(&f, &c, 0.8f, 0.0f, 0.0f, 0.0f, 0.9f, -30);
+    CHECK(r.score < 0.1f, "speech suppressed (%.2f)", r.score);
+    /* speech together with rail evidence (announcement on a platform) is not suppressed */
+    for (int i = 0; i < 3; i++)
+        r = fusion_step(&f, &c, 0.8f, 0.9f, 0.0f, 0.0f, 0.9f, -30);
+    CHECK(r.score > 0.75f, "speech + rail keeps score (%.2f)", r.score);
+    /* suppression strength 0 = off */
+    fusion_init(&f);
+    c.speech_suppression = 0;
+    r = fusion_step(&f, &c, 0.8f, 0.0f, 0.0f, 0.0f, 0.9f, -30);
+    CHECK(r.score > 0.79f, "suppression off (%.2f)", r.score);
+    /* rail gate */
+    fusion_init(&f);
+    fusion_config_defaults(&c);
+    c.require_rail = true;
+    r = fusion_step(&f, &c, 0.9f, 0.05f, 0.0f, 0.0f, 0.0f, -30);
+    CHECK(fabsf(r.score - 0.9f * 0.25f) < 0.01f, "rail gate scales (%.2f)", r.score);
+    r = fusion_step(&f, &c, 0.9f, 0.5f, 0.0f, 0.0f, 0.0f, -30);
+    CHECK(r.score > 0.89f, "rail gate open (%.2f)", r.score);
+    /* loudness rise: quiet background then a loud window passes, a background-level window does not */
+    fusion_init(&f);
+    fusion_config_defaults(&c);
+    c.min_rise_db = 6;
+    for (int i = 0; i < 40; i++)
+        fusion_step(&f, &c, 0.9f, 0.0f, 0.0f, 0.0f, 0.0f, -60);
+    r = fusion_step(&f, &c, 0.9f, 0.0f, 0.0f, 0.0f, 0.0f, -58);
+    CHECK(r.below_rise && r.score < 0.01f, "no rise -> gated");
+    r = fusion_step(&f, &c, 0.9f, 0.0f, 0.0f, 0.0f, 0.0f, -40);
+    CHECK(!r.below_rise && r.score > 0.89f, "rise passes (bg %.1f)", r.background_db);
+    /* other horns count only with rail evidence nearby, and only when enabled */
+    fusion_init(&f);
+    fusion_config_defaults(&c);
+    r = fusion_step(&f, &c, 0.1f, 0.5f, 0.0f, 0.8f, 0.0f, -30);
+    CHECK(r.horn < 0.01f, "other horn ignored by default");
+    c.other_horns = true;
+    r = fusion_step(&f, &c, 0.1f, 0.0f, 0.0f, 0.8f, 0.0f, -30);
+    CHECK(r.horn > 0.79f, "other horn counts with rail nearby");
+    fusion_init(&f);
+    r = fusion_step(&f, &c, 0.1f, 0.0f, 0.0f, 0.8f, 0.0f, -30);
+    CHECK(r.horn < 0.01f, "other horn without rail evidence ignored");
+}
+
 static void put32(unsigned char* p, unsigned v) {
     p[0] = v & 255; p[1] = (v >> 8) & 255; p[2] = (v >> 16) & 255; p[3] = (v >> 24) & 255;
 }
@@ -220,6 +269,7 @@ int main(void) {
     test_horn_and_cooldown();
     test_history_ring();
     test_cap_forceend_clock();
+    test_fusion();
     test_wav();
     printf(failures ? "%d FAILURES\n" : "all host tests passed\n", failures);
     return failures ? 1 : 0;

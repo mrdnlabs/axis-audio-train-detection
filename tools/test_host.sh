@@ -8,4 +8,4 @@ if ! docker image inspect traindet-hosttest >/dev/null 2>&1; then
 fi
 docker run --rm --security-opt seccomp=unconfined -v "$ROOT/acap:/src" -w /src traindet-hosttest bash -c \
   "gcc -std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
-     tests/test_host.c app/detector.c app/wav.c -lm -o /tmp/test_host && setarch $(uname -m) -R /tmp/test_host"
+     tests/test_host.c app/detector.c app/fusion.c app/wav.c -lm -o /tmp/test_host && setarch $(uname -m) -R /tmp/test_host"

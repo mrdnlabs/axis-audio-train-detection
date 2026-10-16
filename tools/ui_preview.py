@@ -17,7 +17,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "acap", "ap
 T0 = time.time()
 PARAMS = {"Enabled": "yes", "Sensitivity": "50", "TriggerSeconds": "3", "ReleaseSeconds": "8",
           "SmoothingSeconds": "2", "MinLevelDbfs": "-65", "CooldownSeconds": "10", "HornSensitivity": "50",
-          "HornTriggers": "yes", "ScoreSource": "head", "MaxEventSeconds": "600"}
+          "HornTriggers": "yes", "ScoreSource": "head", "MaxEventSeconds": "600", "SpeechSuppression": "100", "RequireRailSound": "no", "MinRiseDb": "0", "HornIncludesOtherHorns": "no"}
 HISTORY = [
     {"start": T0 - 3600 * h - 600, "end": T0 - 3600 * h - 600 + d, "duration_s": d, "peak_score": p,
      "mean_score": round(p - 0.3, 3), "peak_level_db": lv, "horn": hn, "label": None}

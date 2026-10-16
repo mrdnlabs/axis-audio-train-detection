@@ -22,6 +22,9 @@ from common import DATA, MANIFEST, OUT  # noqa: E402
 SILENCE_DB = -70.0       # windows quieter than this are dropped (no information)
 POS_QUIET_MARGIN = 25.0  # positive-clip windows >25 dB below the clip's loudest are dropped
 HARD_NEG_WEIGHT = 2.0
+SPEECH_DOMINANT = 0.5   # YAMNet speech group score above which a window is "speech"
+RAIL_PRESENT = 0.1      # rail/horn evidence below which no train is audible
+SPEECH_NEG_WEIGHT = 3.0
 HARD_NEG_LABELS = {
     "Vehicle", "Motor_vehicle_(road)", "Truck", "Bus", "Car", "Car_passing_by", "Motorcycle",
     "Traffic_noise_and_roadway_noise", "Race_car_and_auto_racing", "Accelerating_and_revving_and_vroom",
@@ -148,6 +151,20 @@ def main():
 
     hard = np.array([bool(set(rows[c]["labels"].split(",")) & HARD_NEG_LABELS) for c in d["clip"]])
     sw = np.where((y == 0) & hard, HARD_NEG_WEIGHT, 1.0).astype(np.float32)
+
+    # Label cleaning (v2). Many FSD50K "rail" positives are subway interiors or station
+    # announcements, so their windows are mostly speech with no audible train. Training on
+    # them taught the head that speech means train, which caused live false positives.
+    # Drop positive windows that are speech-dominant with no rail sound, and weight
+    # speech-dominant negatives more heavily.
+    sc = x[:, 1024:]
+    speech = sc[:, [0, 1, 2, 3, 4, 5]].max(1)
+    rail_any = sc[:, [322, 323, 324, 325, 326, 327, 328]].max(1)
+    noisy_pos = (y == 1) & (speech >= SPEECH_DOMINANT) & (rail_any < RAIL_PRESENT)
+    sw[noisy_pos] = 0.0
+    sw[(y == 0) & (speech >= SPEECH_DOMINANT)] *= SPEECH_NEG_WEIGHT
+    print(f"label cleaning: dropped {int((noisy_pos & tr).sum())} speech-only positive train windows "
+          f"of {int((y[tr] == 1).sum())}", flush=True)
 
     head = build_head(x.shape[1])
     head.compile(optimizer=optimizers.Adam(1e-3), loss="binary_crossentropy",

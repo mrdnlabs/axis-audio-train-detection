@@ -212,3 +212,7 @@ input[type=range] { width: 100%; height: 28px; margin: 0; accent-color: var(--in
   .card { padding: 16px; }
   .savebar { bottom: 72px; }
 }
+.help-indent { margin: -8px 0 4px 30px; }
+.effects summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.effects-table { min-width: 0; font-size: 13px; }
+.effects-table td:first-child { font-weight: 600; width: 38%; }

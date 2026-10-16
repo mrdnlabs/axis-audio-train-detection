@@ -54,4 +54,40 @@ Caveats:
 - **Ops:** builtin only (ADD, CONCATENATION, CONV_2D, DEPTHWISE_CONV_2D, FULLY_CONNECTED, GATHER, LOG, LOGISTIC, MEAN, MUL, PAD, RESHAPE, SQRT).
 - **Parity:** Keras vs TFLite max abs diff 3.8e-6.
 - **Interface:** input `[1, 15600]` float32; outputs `[1,1]` (train prob) and `[1,521]` (YAMNet scores). The device tells the outputs apart by byte size.
-- **Test vectors and e2e clip:** `out/testvec/` holds 3 positive and 3 negative held-out clips with per-window expected outputs. `e2e_train.wav` (FSD50K eval/125125, 28.7 s, 31 windows above 0.6 smoothed) is used for the live inject test.
+- **Test vectors and e2e clip:** `out/testvec/` holds 3 positive and 3 negative held-out clips with per-window expected outputs. `e2e_train.wav` is used for the live inject test. Since v0.5.0 it is the CC0 Wikimedia Commons recording "Railway crossing near Woodville" (trackside pass-by with horn), via `model/data/e2e_override.wav`. The earlier FSD50K eval/125125 turned out to be subway-interior speech; see iteration 3.
+
+## Iteration 3: speech false positives and label cleaning (head v2, app v0.5.0)
+
+**Symptom (live, on device).** Talking near the intercom triggered "Train passing".
+- Speech windows averaged a train score of **0.60** (p90 0.85) while rail sounds were **0.00**.
+- A 73 s event consisted entirely of speech.
+
+**Root cause.** Many FSD50K rail-labelled clips are **subway interiors and station announcements**: speech with no audible train.
+- The head learned "speech in this context = train".
+- The old end-to-end test clip (eval/125125, "female speech, subway") was itself one of these: speech 0.83–0.99, rail 0.00, scored 0.6–0.97.
+
+**Fix 1: label cleaning, retrained head v2.**
+- Drop positive training windows with speech ≥ 0.5 and rail/horn < 0.1 (10,280 of 42,779 positive windows).
+- Weight speech negatives ×3.
+
+| Mean head score while speech ≥ 0.5 | v1 | v2 |
+|---|---|---|
+| Non-train clips (test) | 0.28 | **0.03** |
+| Train-labelled clips (test) | 0.55 | **0.06** |
+
+- Synthetic speech (Windows TTS, 6 clips, on device) now scores max **0.00–0.02**, down from as high as 0.53.
+- Test clip-level P/R@0.5 is 0.78/0.65 (v1 was 0.72/0.72). The recall loss is mostly subway-interior speech clips no longer counting as trains, which is intended for trackside detection.
+
+**Fix 2: sound rules (`fusion.c`).**
+- Speech suppression is on by default: score × (1 − max(0, speech − rail evidence in the last ~3 s)).
+- Optional rules: rail gate, loudness rise above the 60 s background, other horns near rail. Offline, a hard 6 dB rise gate halved recall, so it is off by default.
+
+**Open-licensed web trains** (Wikimedia Commons, CC0/CC-BY/BY-SA, 15 pass-bys; none were in training), scored on device:
+- YAMNet's rail lane peaks at **0.96–1.00** on nearly every real train, and the train-horn lane at **0.80–0.95** on clips with horns.
+- With defaults (trigger 3 s), **10–11 of 15 fire**. With a 2 s trigger, 12 of 15, still with zero speech false positives.
+- The misses are videos with narration or music over the train, or very short or distant passes.
+
+**Horns.**
+- Clean horn audio is recognized strongly.
+- Steam and signal whistles land in "Other horns" (YAMNet *Steam whistle* = 1.00, *Train whistle* ≈ 0.2).
+- Weak horns during **phone playback** point to the acoustic path: small speakers roll off below ~400 Hz, and horn fundamentals are ~250–600 Hz. The intercom's noise suppression and beamforming also attenuate sustained tonal sounds.

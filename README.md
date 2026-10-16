@@ -22,7 +22,10 @@ An on-device ACAP that listens to an Axis device's microphone and raises an Axis
    - a **Cooldown**.
 
    A horn sub-detector (YAMNet *Train horn* / *Train whistle*) can start an event on its own.
-4. **Output.** Detections become a stateful **AXEvent** `CameraApplicationPlatform/TrainDetect/TrainDetected` with `active`, `horn` and `confidence`. You can use it in action rules (record, overlay, notify, I/O).
+4. **Output.** Three AXEvents under `CameraApplicationPlatform/TrainDetect`, all usable in action rules (record, overlay, notify, I/O):
+   - **`TrainPresent`**: stateful, `active` true while a train is present.
+   - **`HornDetected`**: fires on each horn.
+   - **`TrainPassed`**: a summary when a pass ends.
 
 FastCGI endpoints (`status.cgi`, `timeline.cgi`, `analyze.cgi`, `label.cgi`) serve the settings UI and the test tools. They run behind the device's Apache, so device authentication and TLS apply.
 
@@ -72,12 +75,26 @@ All settings apply live, with no restart. They can be changed from the app's set
 | SmoothingSeconds | 2 | 0.5–10 s | Moving-average window over the per-window score. |
 | MinLevelDbfs | −65 | −90…−10 | Windows quieter than this score 0. |
 | CooldownSeconds | 10 | 0–300 s | Minimum gap between events. |
+| SpeechSuppression | 100 | 0–100 % | Speech without recent train sounds lowers the score (it was the main false-alarm source). |
+| RequireRailSound | no | yes/no | The score only counts while YAMNet also hears rail sounds. Fewer false alarms, may miss distant trains. |
+| MinRiseDb | 0 | 0–20 dB | The level must exceed the last minute's background by this much (0 = off). This is the "sustained loud pass" requirement, together with TriggerSeconds. |
+| HornIncludesOtherHorns | no | yes/no | Air/truck horns and steam whistles count as a train horn when train sounds are near (±10 s). |
 | MaxEventSeconds | 600 | 0–3600 s | Force-ends an event after this long, so persistent noise above the threshold cannot latch it. 0 = no limit. |
 | HornSensitivity | 50 | 1–100 | Horn threshold = 0.6 − 0.0055 × (S − 1). |
 | HornTriggers | yes | yes/no | A detected horn starts an event immediately. |
 | ScoreSource | head | head / yamnet / max | `head` is the trained detector. `yamnet` is YAMNet's rail classes, a baseline with a much higher false-alarm rate. `max` uses whichever of the two is higher. |
 
-**To act on detections:** go to **System › Events › Rules**, choose the condition **Applications › Train Audio Detection › Train detected**, and pick any action.
+**To act on detections:** go to **System › Events › Rules** and pick a condition under **Applications › Train Audio Detection**:
+
+| Event | Type | Data | Use it for |
+|---|---|---|---|
+| **Train present** (`TrainPresent`) | Stateful (property state `active`) | `active` | **While a train is present:** leave *Use this condition as a trigger* off. Record, overlay text, I/O or a light follow the pass and stop when it's gone (after the release time). **Once per train:** turn the trigger on. |
+| **Horn detected** (`HornDetected`) | Stateless | `confidence`, `test` | An immediate action on each horn or whistle. |
+| **Train passed** (`TrainPassed`) | Stateless | `duration`, `confidence` (peak), `horn`, `test` | Logging or notifications with a summary after each pass. |
+
+New subscribers immediately receive TrainPresent's current state, so "while" rules evaluate correctly after a reboot or rule change. This was verified on device with a temporary rule: overlay text appeared only while the injected train was present, then cleared. The `test` key marks events produced by injected test audio.
+
+To watch the raw event stream: `python tools/watch_events.py 90 [--inject clip.wav]` (ONVIF pull-point over `/vapix/services`).
 
 ### Site tuning
 
@@ -110,7 +127,7 @@ The design source is the Claude Design canvas "Train Audio Detection — UI Rede
 
 `analyze.cgi` requires `Content-Type: audio/wav` and rejects cross-origin `Origin` headers. Together with the custom header on `label.cgi`, this blocks cross-site request forgery from other pages open in an operator's browser. The app routes requests on the exact CGI name and rejects extra path segments, so one access level cannot reach another endpoint.
 
-The AXEvent `TrainDetected` carries the data keys `active`, `horn`, `test` and `confidence`. To keep test playback out of production rules, add the condition `test = false`.
+Injected test audio still drives `TrainPresent`, so rules can be tested end to end. `HornDetected` and `TrainPassed` carry `test=true` for injected audio.
 
 **Privacy:** audio is processed in memory and never stored or transmitted. Live sound classifications (`status.cgi`, `timeline.cgi`) are restricted to operator and admin, because they reveal what the microphone hears (for example, speech).
 

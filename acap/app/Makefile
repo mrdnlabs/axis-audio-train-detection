@@ -1,5 +1,5 @@
 PROG1	= $(shell jq -r '.acapPackageConf.setup.appName' manifest.json)
-OBJS1	= $(PROG1).c audio.c detector.c model.c wav.c web.c
+OBJS1	= $(PROG1).c audio.c detector.c fusion.c model.c wav.c web.c
 PROGS	= $(PROG1)
 DEBUG_DIR = debug
 

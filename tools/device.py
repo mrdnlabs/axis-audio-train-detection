@@ -125,7 +125,7 @@ def event_declared():
             'xmlns:aev="http://www.axis.com/vapix/ws/event1"><SOAP-ENV:Body>'
             '<aev:GetEventInstances/></SOAP-ENV:Body></SOAP-ENV:Envelope>')
     r = S.post(BASE + "/vapix/services", data=soap, headers={"Content-Type": "application/soap+xml"}, timeout=30)
-    return "TrainDetect" in r.text, r.status_code
+    return all(t in r.text for t in ("TrainPresent", "HornDetected", "TrainPassed")), r.status_code
 
 
 def verify():
@@ -183,7 +183,7 @@ def verify():
     found, code = event_declared()
     fails += 0 if found else bad(f"TrainDetect event not in GetEventInstances (HTTP {code})")
     if found:
-        ok("tnsaxis:CameraApplicationPlatform/TrainDetect/TrainDetected declared")
+        ok("tnsaxis:CameraApplicationPlatform/TrainDetect/{TrainPresent,HornDetected,TrainPassed} declared")
 
     print("== end-to-end: inject a train recording into the live pipeline")
     pos = [os.path.join(tv, "e2e_train.wav")] if os.path.exists(os.path.join(tv, "e2e_train.wav")) else []
@@ -192,7 +192,7 @@ def verify():
         r = wav_post(pos[0], mode="inject")
         print("  info  inject:", r.status_code, r.text[:120])
         seen_active = False
-        for _ in range(40):
+        for _ in range(90):
             time.sleep(1)
             s = status()
             seen_active |= s["state"] == "active"

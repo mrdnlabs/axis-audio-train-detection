@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Train Audio Detection</title>
-  <link rel="stylesheet" href="style.css?v=0.4.0">
+  <link rel="stylesheet" href="style.css?v=0.5.0">
 </head>
 <body>
 <div class="shell">
   <nav class="nav" aria-label="Main">
     <div class="brand">
       <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true"><rect x="1" y="1" width="34" height="34" rx="8" fill="#F2B705"/><path d="M8 22h3l2-8 3 12 3-16 3 12 2-4h4" fill="none" stroke="#12161B" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <div><span class="brand-name">Train Audio</span><span class="brand-sub">Detection · v<span id="appVersion">0.4</span></span></div>
+      <div><span class="brand-name">Train Audio</span><span class="brand-sub">Detection · v<span id="appVersion">0.5</span></span></div>
     </div>
     <a href="#live" data-view="live">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3l3-7 4 14 3-9 2 2h3"/></svg><span>Live</span></a>
@@ -201,6 +201,39 @@
             </div>
           </section>
 
+          <section class="card" aria-labelledby="h-rules">
+            <div class="card-title"><h2 id="h-rules">Sound rules</h2><p class="small muted">Adjust how the other sounds the device recognizes change the train score.</p></div>
+            <div class="field">
+              <div class="field-head"><label for="SpeechSuppression">Speech suppression</label><span class="mono strong"><output id="SpeechSuppressionOut">–</output></span></div>
+              <input type="range" id="SpeechSuppression" min="0" max="100" step="10">
+              <span class="small muted">Talking near the device lowers the train score, unless train sounds were heard in the last ~3 s (for example, a platform announcement during a pass).</span>
+            </div>
+            <label class="check"><input type="checkbox" id="RequireRailSound">Require train-like sounds</label>
+            <span class="small muted help-indent">The score only counts while YAMNet also hears rail sounds (train, railroad car, wheels, horn). This gives fewer false alarms but may miss distant or muffled trains.</span>
+            <div class="field">
+              <div class="field-head"><label for="MinRiseDb">Sustained loudness rise</label><span class="mono strong"><output id="MinRiseDbOut">–</output></span></div>
+              <input type="range" id="MinRiseDb" min="0" max="20" step="1">
+              <span class="small muted">The sound must be this much louder than the last minute's background (0 = off). Combine it with Trigger duration to require a sustained, loud pass. Start at 3–6 dB at quiet sites.</span>
+            </div>
+            <label class="check"><input type="checkbox" id="HornIncludesOtherHorns">Count other horns near train sounds</label>
+            <span class="small muted help-indent">Air or truck horns and steam whistles count as a train horn when train sounds were heard within ~10 s. This helps when horns are heard through a speaker or from far away.</span>
+            <details class="effects">
+              <summary class="strong">How each sound affects the train score</summary>
+              <table class="table effects-table">
+                <thead><tr><th scope="col">Sound</th><th scope="col">Effect</th></tr></thead>
+                <tbody>
+                  <tr><td>Rail sounds (train, wagons, wheels)</td><td>Strongly raises the score; this is the model's main evidence.</td></tr>
+                  <tr><td>Train horn / whistle</td><td>Raises the score and, with "Horn starts an event", starts an event on its own (≥ 1 s above the horn threshold).</td></tr>
+                  <tr><td>Other horns (car, truck, steam)</td><td>Little effect, unless "Count other horns" is on and train sounds are near.</td></tr>
+                  <tr><td>Road vehicles, engines</td><td>Neutral on their own: the model learned to tell them apart from trains.</td></tr>
+                  <tr><td>Speech</td><td>Lowers the score with speech suppression on. The model alone can score close-up speech as a train.</td></tr>
+                  <tr><td>Music</td><td>Strongly lowers the score in the model.</td></tr>
+                  <tr><td>Loudness</td><td>Below "Minimum level" the score is ignored. With "Sustained loudness rise", the level must also rise above the background.</td></tr>
+                </tbody>
+              </table>
+            </details>
+          </section>
+
           <section class="card" aria-labelledby="h-src">
             <h2 id="h-src">Score source</h2>
             <div id="ScoreSource" class="radio-cards" role="radiogroup" aria-labelledby="h-src">
@@ -212,7 +245,7 @@
 
           <section class="card card-dark">
             <span class="strong">Act on detections</span>
-            <span>In the device's <b>System › Events › Rules</b>, choose the condition <b>Applications › Train Audio Detection › Train detected</b> to record, overlay, notify or switch an output.</span>
+            <span>In the device's <b>System › Events › Rules</b>, choose the condition <b>Applications › Train Audio Detection › Train present</b> to record, overlay, notify or switch an output while a train is present. <b>Horn detected</b> and <b>Train passed</b> are available as one-shot triggers.</span>
           </section>
         </div>
       </div>
@@ -307,6 +340,6 @@
     </section>
   </main>
 </div>
-<script src="app.js?v=0.4.0"></script>
+<script src="app.js?v=0.5.0"></script>
 </body>
 </html>

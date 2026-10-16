@@ -21,7 +21,7 @@
 | F3 | Compute the window level in dBFS (RMS) for the loudness gate and for display. |
 | F4 | Detection state machine: IDLE → CANDIDATE → ACTIVE → (release) → IDLE, using smoothed score, threshold, trigger duration, release time and level gate. |
 | F5 | Horn sub-detector: max(YAMNet Train horn, Train whistle) ≥ horn threshold for ≥2 consecutive windows. Sets the `horn` flag on the active event and in status. |
-| F6 | Declare a stateful **AXEvent** "Train detected" (`Active` true/false, `Confidence`, `Horn`) usable in Axis action rules (record, overlay, notify, output port). |
+| F6 | AXEvents:<br>• **TrainPresent**: a stateful property event whose data is `active` only. It works for "while" rules and for once-per-train triggers.<br>• **HornDetected**: stateless, with `confidence` and `test`.<br>• **TrainPassed**: stateless end-of-pass summary with `duration`, `confidence`, `horn` and `test`. |
 | F7 | Keep an in-memory history of the last 50 detections: start, end, duration, peak and mean confidence, peak level, horn. |
 | F8 | `status.cgi` (operator), plus `timeline.cgi` (operator, per-window key-sound history for about 5 minutes): live state, scores, level, top YAMNet classes, inference latency, counters, history, effective settings. |
 | F9 | `analyze.cgi` (admin, POST WAV 16 kHz mono PCM16, ≤ 60 s): run the same model on uploaded audio and return per-window scores. Used for on-device verification and site tuning. `?mode=inject` plays the WAV into the live detector in place of the mic, for end-to-end event tests. Requires `Content-Type: audio/wav` and a same-origin request (CSRF guard). |
@@ -41,6 +41,10 @@
 | `HornSensitivity` | slider | 1–100 | 50 | Horn threshold, `0.6 − 0.0055 × (S−1)`. |
 | `CooldownSeconds` | slider | 0–300 s | 10 | Minimum gap after an event ends before a new one can start. |
 | `MaxEventSeconds` | slider | 0–3600 s | 600 | Force-ends an event after this long (0 = no limit). |
+| `SpeechSuppression` | slider | 0–100 % | 100 | Score × (1 − S·max(0, speech − recent rail evidence)). |
+| `RequireRailSound` | toggle | yes/no | no | Score × min(1, recent rail evidence / 0.2). |
+| `MinRiseDb` | slider | 0–20 dB | 0 | The level must exceed the 60 s background (20th percentile) by this much. |
+| `HornIncludesOtherHorns` | toggle | yes/no | no | Other horns count as a horn when rail evidence is within ±10 s. |
 | `HornTriggers` | toggle | yes/no | yes | A detected train horn starts an event immediately. Horns precede the train by 15–25 s at US crossings. |
 | `ScoreSource` | select | head / yamnet / max | head | `head` = trained head. `yamnet` = max of YAMNet rail classes (baseline). `max` = the larger of the two. |
 

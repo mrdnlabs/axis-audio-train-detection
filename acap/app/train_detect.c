@@ -62,8 +62,18 @@ void app_groups(const float* scores, float* groups) {
 
 static GMainLoop* main_loop;
 static AXEventHandler* event_handler;
-static guint event_decl;
-static gboolean event_declared;
+/* Three AXEvents (topics under CameraApplicationPlatform/TrainDetect):
+ *   TrainPresent   stateful property event, data = `active` only. Rules: "while active"
+ *                  conditions or once-per-train triggers.
+ *                  Never change a declared topic's data keys: the event system keeps every
+ *                  schema it has seen for a topic until reboot, and conflicting schemas make
+ *                  AddActionRule fail with "expression matched multiple property events"
+ *                  (that is why this topic replaced v0.1-0.5.0's TrainDetected).
+ *   HornDetected   stateless: a horn/whistle was heard (confidence, test).
+ *   TrainPassed    stateless summary when a pass ends (duration, peak confidence, horn, test). */
+enum { EV_STATE, EV_HORN, EV_PASSED, EV_COUNT };
+static guint event_decl[EV_COUNT];
+static gboolean event_declared[EV_COUNT];
 static volatile gint stop_flag;
 static int exit_code = EXIT_SUCCESS;
 
@@ -183,6 +193,14 @@ static bool apply_param(det_config_t* c, const char* name, const char* value, do
         c->horn_triggers = !strcmp(value, "yes");
         return true;
     }
+    if (!strcmp(name, "RequireRailSound")) {
+        g_app.fcfg.require_rail = !strcmp(value, "yes");
+        return true;
+    }
+    if (!strcmp(name, "HornIncludesOtherHorns")) {
+        g_app.fcfg.other_horns = !strcmp(value, "yes");
+        return true;
+    }
     if (!strcmp(name, "ScoreSource")) {
         c->score_source = !strcmp(value, "yamnet") ? SCORE_YAMNET : (!strcmp(value, "max") ? SCORE_MAX : SCORE_HEAD);
         return true;
@@ -215,6 +233,12 @@ static bool apply_param(det_config_t* c, const char* name, const char* value, do
     } else if (!strcmp(name, "MaxEventSeconds")) {
         if (ok)
             c->max_event_s = clampd(v, 0, 3600);
+    } else if (!strcmp(name, "SpeechSuppression")) {
+        if (ok)
+            g_app.fcfg.speech_suppression = (float)clampd(v, 0, 100) / 100.0f;
+    } else if (!strcmp(name, "MinRiseDb")) {
+        if (ok)
+            g_app.fcfg.min_rise_db = (float)clampd(v, 0, 20);
     }
     return ok;
 }
@@ -284,7 +308,8 @@ static void maybe_write_back(const char* name, const char* value, bool parsed, d
 
 static const char* PARAMS[] = {"Enabled",         "Sensitivity",  "TriggerSeconds",  "ReleaseSeconds",
                                "SmoothingSeconds", "MinLevelDbfs", "HornSensitivity", "HornTriggers",
-                               "CooldownSeconds", "ScoreSource",  "MaxEventSeconds", NULL};
+                               "CooldownSeconds", "ScoreSource",  "MaxEventSeconds", "SpeechSuppression",
+                               "RequireRailSound", "MinRiseDb", "HornIncludesOtherHorns", NULL};
 
 static void on_param_changed(const gchar* name, const gchar* value, gpointer user_data) {
     (void)user_data;
@@ -336,65 +361,96 @@ static AXParameter* setup_params(void) {
 /* ---------- events ---------- */
 
 typedef struct {
+    int kind;
     gboolean active;
     gboolean horn;
     gboolean test;
     gdouble confidence;
+    gdouble duration;
 } event_msg_t;
 
 static void declaration_complete(guint declaration, gpointer user_data) {
-    (void)user_data;
-    event_declared = TRUE;
-    g_atomic_int_set(&g_app.events_declared, 1);
-    syslog(LOG_INFO, "[traindet] event declaration %u complete", declaration);
+    int kind              = GPOINTER_TO_INT(user_data);
+    event_declared[kind]  = TRUE;
+    gboolean all          = event_declared[EV_STATE] && event_declared[EV_HORN] && event_declared[EV_PASSED];
+    g_atomic_int_set(&g_app.events_declared, all ? 1 : 0);
+    syslog(LOG_INFO, "[traindet] event declaration %u (kind %d) complete", declaration, kind);
 }
 
-static void declare_event(void) {
-    GError* err             = NULL;
+static AXEventKeyValueSet* topic_kvs(const char* topic2, const char* nice) {
     AXEventKeyValueSet* kvs = ax_event_key_value_set_new();
-    gboolean active         = FALSE;
-    gboolean horn           = FALSE;
-    gboolean test           = FALSE;
-    gdouble conf            = 0.0;
     ax_event_key_value_set_add_key_value(kvs, "topic0", "tnsaxis", "CameraApplicationPlatform",
                                          AX_VALUE_TYPE_STRING, NULL);
     ax_event_key_value_set_add_key_value(kvs, "topic1", "tnsaxis", "TrainDetect", AX_VALUE_TYPE_STRING, NULL);
     ax_event_key_value_set_add_nice_names(kvs, "topic1", "tnsaxis", "Train Audio Detection",
                                           "Train Audio Detection", NULL);
-    ax_event_key_value_set_add_key_value(kvs, "topic2", "tnsaxis", "TrainDetected", AX_VALUE_TYPE_STRING, NULL);
-    ax_event_key_value_set_add_nice_names(kvs, "topic2", "tnsaxis", "Train detected", "Train detected", NULL);
-    ax_event_key_value_set_add_key_value(kvs, "active", NULL, &active, AX_VALUE_TYPE_BOOL, NULL);
-    ax_event_key_value_set_mark_as_data(kvs, "active", NULL, NULL);
-    ax_event_key_value_set_add_nice_names(kvs, "active", NULL, "Active", NULL, NULL);
-    ax_event_key_value_set_add_key_value(kvs, "horn", NULL, &horn, AX_VALUE_TYPE_BOOL, NULL);
-    ax_event_key_value_set_mark_as_data(kvs, "horn", NULL, NULL);
-    ax_event_key_value_set_add_nice_names(kvs, "horn", NULL, "Horn heard", NULL, NULL);
-    ax_event_key_value_set_add_key_value(kvs, "test", NULL, &test, AX_VALUE_TYPE_BOOL, NULL);
-    ax_event_key_value_set_mark_as_data(kvs, "test", NULL, NULL);
-    ax_event_key_value_set_add_nice_names(kvs, "test", NULL, "Test audio (injected)", NULL, NULL);
-    ax_event_key_value_set_add_key_value(kvs, "confidence", NULL, &conf, AX_VALUE_TYPE_DOUBLE, NULL);
-    ax_event_key_value_set_mark_as_data(kvs, "confidence", NULL, NULL);
-    ax_event_key_value_set_mark_as_user_defined(kvs, "confidence", NULL, "wstype:xs:float", NULL);
-    if (!ax_event_handler_declare2(event_handler, kvs, FALSE, (gchar*)"active", &event_decl,
-                                   (AXDeclarationCompleteCallback)declaration_complete, NULL, &err)) {
-        syslog(LOG_ERR, "[traindet] event declare failed: %s", err ? err->message : "?");
+    ax_event_key_value_set_add_key_value(kvs, "topic2", "tnsaxis", topic2, AX_VALUE_TYPE_STRING, NULL);
+    ax_event_key_value_set_add_nice_names(kvs, "topic2", "tnsaxis", nice, nice, NULL);
+    return kvs;
+}
+
+static void add_data(AXEventKeyValueSet* kvs, const char* key, AXEventValueType type, gconstpointer v,
+                     const char* nice, const char* wstype) {
+    ax_event_key_value_set_add_key_value(kvs, key, NULL, v, type, NULL);
+    ax_event_key_value_set_mark_as_data(kvs, key, NULL, NULL);
+    if (nice)
+        ax_event_key_value_set_add_nice_names(kvs, key, NULL, nice, NULL, NULL);
+    if (wstype)
+        ax_event_key_value_set_mark_as_user_defined(kvs, key, NULL, wstype, NULL);
+}
+
+static void declare(int kind, AXEventKeyValueSet* kvs, gboolean stateless, const char* property) {
+    GError* err = NULL;
+    if (!ax_event_handler_declare2(event_handler, kvs, stateless, (gchar*)property, &event_decl[kind],
+                                   (AXDeclarationCompleteCallback)declaration_complete, GINT_TO_POINTER(kind),
+                                   &err)) {
+        syslog(LOG_ERR, "[traindet] event declare (kind %d) failed: %s", kind, err ? err->message : "?");
         g_clear_error(&err);
     }
     ax_event_key_value_set_free(kvs);
 }
 
+static void declare_events(void) {
+    gboolean f = FALSE;
+    gdouble z  = 0.0;
+    AXEventKeyValueSet* k;
+
+    k = topic_kvs("TrainPresent", "Train present");
+    add_data(k, "active", AX_VALUE_TYPE_BOOL, &f, "Active", NULL);
+    declare(EV_STATE, k, FALSE, "active");
+
+    k = topic_kvs("HornDetected", "Horn detected");
+    add_data(k, "confidence", AX_VALUE_TYPE_DOUBLE, &z, "Confidence", "wstype:xs:float");
+    add_data(k, "test", AX_VALUE_TYPE_BOOL, &f, "Test audio (injected)", NULL);
+    declare(EV_HORN, k, TRUE, NULL);
+
+    k = topic_kvs("TrainPassed", "Train passed");
+    add_data(k, "duration", AX_VALUE_TYPE_DOUBLE, &z, "Duration (s)", "wstype:xs:float");
+    add_data(k, "confidence", AX_VALUE_TYPE_DOUBLE, &z, "Peak confidence", "wstype:xs:float");
+    add_data(k, "horn", AX_VALUE_TYPE_BOOL, &f, "Horn heard", NULL);
+    add_data(k, "test", AX_VALUE_TYPE_BOOL, &f, "Test audio (injected)", NULL);
+    declare(EV_PASSED, k, TRUE, NULL);
+}
+
 static gboolean send_event_main(gpointer data) {
     event_msg_t* m = data;
-    if (event_handler && event_declared) {
+    if (event_handler && event_declared[m->kind]) {
         GError* err             = NULL;
         AXEventKeyValueSet* kvs = ax_event_key_value_set_new();
-        ax_event_key_value_set_add_key_value(kvs, "active", NULL, &m->active, AX_VALUE_TYPE_BOOL, NULL);
-        ax_event_key_value_set_add_key_value(kvs, "horn", NULL, &m->horn, AX_VALUE_TYPE_BOOL, NULL);
-        ax_event_key_value_set_add_key_value(kvs, "test", NULL, &m->test, AX_VALUE_TYPE_BOOL, NULL);
-        ax_event_key_value_set_add_key_value(kvs, "confidence", NULL, &m->confidence, AX_VALUE_TYPE_DOUBLE, NULL);
+        if (m->kind == EV_STATE) {
+            ax_event_key_value_set_add_key_value(kvs, "active", NULL, &m->active, AX_VALUE_TYPE_BOOL, NULL);
+        } else if (m->kind == EV_HORN) {
+            ax_event_key_value_set_add_key_value(kvs, "confidence", NULL, &m->confidence, AX_VALUE_TYPE_DOUBLE, NULL);
+            ax_event_key_value_set_add_key_value(kvs, "test", NULL, &m->test, AX_VALUE_TYPE_BOOL, NULL);
+        } else {
+            ax_event_key_value_set_add_key_value(kvs, "duration", NULL, &m->duration, AX_VALUE_TYPE_DOUBLE, NULL);
+            ax_event_key_value_set_add_key_value(kvs, "confidence", NULL, &m->confidence, AX_VALUE_TYPE_DOUBLE, NULL);
+            ax_event_key_value_set_add_key_value(kvs, "horn", NULL, &m->horn, AX_VALUE_TYPE_BOOL, NULL);
+            ax_event_key_value_set_add_key_value(kvs, "test", NULL, &m->test, AX_VALUE_TYPE_BOOL, NULL);
+        }
         AXEvent* ev = ax_event_new2(kvs, NULL);
         ax_event_key_value_set_free(kvs);
-        if (!ax_event_handler_send_event(event_handler, event_decl, ev, &err)) {
+        if (!ax_event_handler_send_event(event_handler, event_decl[m->kind], ev, &err)) {
             syslog(LOG_WARNING, "[traindet] send event failed: %s", err ? err->message : "?");
             g_clear_error(&err);
         }
@@ -404,13 +460,20 @@ static gboolean send_event_main(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-static void queue_event(gboolean active, gboolean horn, gboolean test, double conf) {
-    event_msg_t* m = g_new0(event_msg_t, 1);
-    m->active      = active;
-    m->horn        = horn;
-    m->test        = test;
-    m->confidence  = conf;
-    g_idle_add(send_event_main, m); /* always runs on the main loop thread */
+static void queue_msg(event_msg_t m) {
+    g_idle_add(send_event_main, g_memdup2(&m, sizeof(m))); /* always runs on the main loop thread */
+}
+
+static void queue_state(gboolean active) {
+    queue_msg((event_msg_t){.kind = EV_STATE, .active = active});
+}
+
+static void queue_passed(const det_event_t* e) {
+    queue_msg((event_msg_t){.kind       = EV_PASSED,
+                            .duration   = e->duration_s,
+                            .confidence = e->peak_score,
+                            .horn       = e->horn,
+                            .test       = e->test});
 }
 
 static gboolean quit_main(gpointer data) {
@@ -429,8 +492,10 @@ static void failsafe_exit(const char* reason) {
     det_event_t e = ended ? *detector_history(&g_app.det, 0) : g_app.det.cur;
     snprintf(g_app.last_error, sizeof(g_app.last_error), "%s", reason);
     g_mutex_unlock(&g_app.lock);
-    if (ended)
-        queue_event(FALSE, e.horn, e.test, e.peak_score);
+    if (ended) {
+        queue_state(FALSE);
+        queue_passed(&e);
+    }
     exit_code = EXIT_FAILURE;
     g_atomic_int_set(&stop_flag, 1);
     g_idle_add(quit_main, NULL);
@@ -473,6 +538,7 @@ static gpointer inference_thread(gpointer data) {
         if (dt > 1.0)
             dt = 1.0;
 
+        float horn_eff = 0.0f;
         audio_info_t ai;
         audio_get_info(g_app.audio, &ai);
         bool injecting = ai.inject_remaining > 0;
@@ -500,9 +566,17 @@ static gpointer inference_thread(gpointer data) {
             continue;
         }
         consecutive_err = 0;
-        float rail     = app_max_of(out.scores, RAIL_IDX, RAIL_IDX_N);
-        float horn     = app_max_of(out.scores, HORN_IDX, HORN_IDX_N);
-        det_result_t r = detector_update(&g_app.det, &g_app.cfg, now, wall, dt, out.train_prob, rail, horn, level);
+        float rail = app_max_of(out.scores, RAIL_IDX, RAIL_IDX_N);
+        float horn = app_max_of(out.scores, HORN_IDX, HORN_IDX_N);
+        app_groups(out.scores, g_app.last_groups);
+        /* Sound rules (speech suppression, rail evidence, loudness rise, horn conjunction)
+         * turn the model's score into the score the detector sees. */
+        fusion_result_t fr = fusion_step(&g_app.fusion, &g_app.fcfg, out.train_prob, g_app.last_groups[G_RAIL],
+                                         g_app.last_groups[G_TRAIN_HORN], g_app.last_groups[G_OTHER_HORN],
+                                         g_app.last_groups[G_SPEECH], level);
+        g_app.last_fusion = fr;
+        horn_eff          = fr.horn;
+        det_result_t r = detector_update(&g_app.det, &g_app.cfg, now, wall, dt, fr.score, rail, fr.horn, level);
         if (injecting && g_app.det.state == DET_ACTIVE)
             g_app.det.cur.test = true; /* injected audio: mark so rules/VMS can tell it apart */
         if (r.ended && injecting)
@@ -513,7 +587,6 @@ static gpointer inference_thread(gpointer data) {
         g_app.last_horn     = horn;
         g_app.last_level_db = level;
         app_top_classes(out.scores, g_app.top, TOP_K);
-        app_groups(out.scores, g_app.last_groups);
         {
             timeline_entry_t* te = &g_app.timeline[g_app.timeline_seq % TIMELINE_LEN];
             g_app.timeline_seq++;
@@ -541,17 +614,18 @@ static gpointer inference_thread(gpointer data) {
         if (r.started) {
             syslog(LOG_INFO, "[traindet] TRAIN START score=%.2f thr=%.2f level=%.1fdBFS horn=%d", r.score_smooth,
                    r.threshold, level, cur.horn);
-            queue_event(TRUE, cur.horn, cur.test, r.score_smooth);
+            queue_state(TRUE);
         }
-        /* The horn flag is reported on START (when a horn started the event) and on
-         * END; it is not re-sent mid-event, which would re-fire "on event" rules. */
-        if (r.horn_now)
-            syslog(LOG_INFO, "[traindet] horn score=%.2f thr=%.2f", horn, r.horn_threshold);
+        if (r.horn_now) {
+            syslog(LOG_INFO, "[traindet] horn score=%.2f thr=%.2f", horn_eff, r.horn_threshold);
+            queue_msg((event_msg_t){.kind = EV_HORN, .confidence = horn_eff, .test = injecting});
+        }
         if (ended) {
             syslog(LOG_INFO, "[traindet] TRAIN END duration=%.1fs peak=%.2f mean=%.2f peak_level=%.1fdBFS horn=%d%s%s",
                    ended_copy.duration_s, ended_copy.peak_score, ended_copy.mean_score, ended_copy.peak_level_db,
                    ended_copy.horn, ended_copy.test ? " TEST" : "", ended_copy.capped ? " capped" : "");
-            queue_event(FALSE, ended_copy.horn, ended_copy.test, ended_copy.peak_score);
+            queue_state(FALSE);
+            queue_passed(&ended_copy);
         }
     }
     return NULL;
@@ -574,6 +648,8 @@ int main(int argc, char** argv) {
     memset(&g_app, 0, sizeof(g_app));
     g_mutex_init(&g_app.lock);
     detector_config_defaults(&g_app.cfg);
+    fusion_config_defaults(&g_app.fcfg);
+    fusion_init(&g_app.fusion);
     detector_init(&g_app.det);
     for (int i = 0; i < TOP_K; i++)
         g_app.top[i].idx = -1;
@@ -600,7 +676,7 @@ int main(int argc, char** argv) {
     }
 
     event_handler = ax_event_handler_new();
-    declare_event();
+    declare_events();
 
     if (!web_start())
         syslog(LOG_ERR, "[traindet] web API failed to start (status/analyze unavailable)");
@@ -613,8 +689,9 @@ int main(int argc, char** argv) {
     syslog(LOG_INFO, "[traindet] stopping");
     g_atomic_int_set(&stop_flag, 1);
     g_thread_join(infer);
-    if (event_declared)
-        ax_event_handler_undeclare(event_handler, event_decl, NULL);
+    for (int i = 0; i < EV_COUNT; i++)
+        if (event_declared[i])
+            ax_event_handler_undeclare(event_handler, event_decl[i], NULL);
     ax_event_handler_free(event_handler);
     event_handler = NULL;
     /* Audio and model are not freed: FastCGI workers may still be serving a request and

@@ -21,16 +21,17 @@
   const HOP_S = 0.48;
   const SERIES_MAX = 600; // ~10 min of 1 Hz status samples
   const PARAMS = ['Enabled', 'Sensitivity', 'TriggerSeconds', 'ReleaseSeconds', 'SmoothingSeconds',
-    'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity', 'HornTriggers', 'ScoreSource', 'MaxEventSeconds'];
+    'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity', 'HornTriggers', 'ScoreSource', 'MaxEventSeconds',
+    'SpeechSuppression', 'RequireRailSound', 'MinRiseDb', 'HornIncludesOtherHorns'];
   const DEFAULTS = { Enabled: 'yes', Sensitivity: '50', TriggerSeconds: '3', ReleaseSeconds: '8', SmoothingSeconds: '2',
     MinLevelDbfs: '-65', CooldownSeconds: '10', HornSensitivity: '50', HornTriggers: 'yes', ScoreSource: 'head',
-    MaxEventSeconds: '600' };
+    MaxEventSeconds: '600', SpeechSuppression: '100', RequireRailSound: 'no', MinRiseDb: '0', HornIncludesOtherHorns: 'no' };
   const PRESETS = {
     rural: { Sensitivity: '62', TriggerSeconds: '2', ReleaseSeconds: '6', SmoothingSeconds: '2', MinLevelDbfs: '-70', CooldownSeconds: '10' },
     suburban: { Sensitivity: '50', TriggerSeconds: '3', ReleaseSeconds: '8', SmoothingSeconds: '2', MinLevelDbfs: '-65', CooldownSeconds: '10' },
     urban: { Sensitivity: '35', TriggerSeconds: '6', ReleaseSeconds: '10', SmoothingSeconds: '3', MinLevelDbfs: '-55', CooldownSeconds: '20' }
   };
-  const UNITS = { TriggerSeconds: ' s', ReleaseSeconds: ' s', SmoothingSeconds: ' s', CooldownSeconds: ' s', MinLevelDbfs: ' dBFS', MaxEventSeconds: ' s' };
+  const UNITS = { TriggerSeconds: ' s', ReleaseSeconds: ' s', SmoothingSeconds: ' s', CooldownSeconds: ' s', MinLevelDbfs: ' dBFS', MaxEventSeconds: ' s', SpeechSuppression: ' %', MinRiseDb: ' dB' };
   const FETCH_TIMEOUT_MS = 5000;
   // fetch() with a timeout so a busy device shows "lost connection" instead of freezing the UI.
   function fetchT(url, opts, ms) {
@@ -165,6 +166,32 @@
   }
 
   // ------------------------------------------------------------------ detector simulation (mirrors detector.c)
+  // Mirrors fusion.c: speech suppression, rail gate, loudness rise, other-horn conjunction.
+  // pts: [{head, rail, g:[rail, train_horn, other_horn, vehicle, speech, music], level}] -> sets p.raw, p.horn
+  function fuseStream(pts, cfg) {
+    const railHist = [], levels = [];
+    pts.forEach((p) => {
+      const g = p.g || [p.rail || 0, p.hornRaw || 0, 0, 0, 0, 0];
+      railHist.push(Math.max(g[0], g[1]));
+      if (railHist.length > 20) railHist.shift();
+      const recent = Math.max(...railHist.slice(-6)), near = Math.max(...railHist);
+      let bg = p.level;
+      if (levels.length >= 20) { const t = [...levels].sort((a, b) => a - b); bg = t[Math.floor(t.length / 5)]; }
+      levels.push(p.level);
+      if (levels.length > 125) levels.shift();
+      let h = p.head;
+      if (cfg.speechSup > 0) h *= 1 - cfg.speechSup * clamp(g[4] - recent, 0, 1);
+      if (cfg.requireRail) h *= clamp(recent / 0.2, 0, 1);
+      if (cfg.minRise > 0 && levels.length > 21 && p.level < bg + cfg.minRise) h = 0;
+      h = clamp(h, 0, 1);
+      const railForSource = Math.max(g[0], g[1]);
+      p.raw = cfg.source === 'yamnet' ? railForSource : (cfg.source === 'max' ? Math.max(h, railForSource) : h);
+      p.horn = g[1];
+      if (cfg.otherHorns && near >= 0.2 && g[2] > p.horn) p.horn = g[2];
+    });
+    return pts;
+  }
+
   // Mirrors detector.c: count-based moving average over round(smooth/0.48) windows,
   // loudness gate, trigger/release timers, horn-triggered starts (>= 2 consecutive
   // windows), cooldown and the max-duration cap. points are 0.48 s windows:
@@ -207,9 +234,10 @@
     const v = (id) => +$(id).value;
     return { sens: v('Sensitivity'), trigger: v('TriggerSeconds'), release: v('ReleaseSeconds'), smooth: v('SmoothingSeconds'),
       minLevel: v('MinLevelDbfs'), cool: v('CooldownSeconds'), maxEvent: v('MaxEventSeconds'), hornSens: v('HornSensitivity'),
-      hornTriggers: $('HornTriggers').checked, source: params.ScoreSource || 'head' };
+      hornTriggers: $('HornTriggers').checked, source: params.ScoreSource || 'head',
+      speechSup: v('SpeechSuppression') / 100, requireRail: $('RequireRailSound').checked, minRise: v('MinRiseDb'),
+      otherHorns: $('HornIncludesOtherHorns').checked };
   }
-  const rawOf = (p, source) => (source === 'yamnet' ? p.rail : (source === 'max' ? Math.max(p.head, p.rail) : p.head));
 
   // ------------------------------------------------------------------ parameters
   async function loadParams() {
@@ -302,11 +330,12 @@
     document.querySelectorAll('#presetGroup button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.preset === match)));
   }
 
-  ['Sensitivity', 'TriggerSeconds', 'ReleaseSeconds', 'SmoothingSeconds', 'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity', 'MaxEventSeconds'].forEach((p) => {
+  ['Sensitivity', 'TriggerSeconds', 'ReleaseSeconds', 'SmoothingSeconds', 'MinLevelDbfs', 'CooldownSeconds', 'HornSensitivity', 'MaxEventSeconds', 'SpeechSuppression', 'MinRiseDb'].forEach((p) => {
     $(p).addEventListener('input', () => { showValue(p); params[p] = $(p).value; updatePresetUi(); renderTuning(); });
     $(p).addEventListener('change', () => queueSave(p));
   });
-  $('HornTriggers').addEventListener('change', () => { queueSave('HornTriggers'); renderTuning(); });
+  ['HornTriggers', 'RequireRailSound', 'HornIncludesOtherHorns'].forEach((p) =>
+    $(p).addEventListener('change', () => { queueSave(p); renderTuning(); if (lastResult) renderTest(); }));
   $('ScoreSource').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
     params.ScoreSource = b.dataset.value;
     $('ScoreSource').querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
@@ -492,8 +521,7 @@
     const thr = thrOf(cfg.sens);
     // Preview: replay the buffered scores through the detector with the slider values.
     // rail for the detector = max over rail classes incl. horn/whistle (as in the C code)
-    const pts = timeline.map((x) => ({ t: x.t, raw: rawOf({ head: x.head, rail: Math.max(x.g[0], x.g[1]) }, cfg.source),
-      horn: x.g[1], level: x.level }));
+    const pts = fuseStream(timeline.map((x) => ({ t: x.t, head: x.head, g: x.g, level: x.level })), cfg);
     if (pts.length >= 10) {
       const events = simulate(pts, cfg);
       const span = pts[pts.length - 1].t - pts[0].t;
@@ -713,7 +741,7 @@
     const res = lastResult, w = res.windows;
     const cfg = currentCfg();
     const thr = thrOf(cfg.sens);
-    const pts = w.map((x) => ({ t: x.t, raw: rawOf({ head: x.prob, rail: x.rail }, cfg.source), horn: x.horn, level: x.level_db }));
+    const pts = fuseStream(w.map((x) => ({ t: x.t, head: x.prob, g: x.groups, rail: x.rail, hornRaw: x.horn, level: x.level_db })), cfg);
     const events = simulate(pts, cfg);
     $('resultCard').hidden = false;
     const v = $('verdict'), icon = $('verdictIcon');
